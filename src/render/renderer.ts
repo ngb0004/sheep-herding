@@ -1,5 +1,25 @@
+import { DogStats } from '../game/dog';
+import { Dog, Obstacle, Sheep } from '../game/flock';
+import { Meadow, streamYAt } from '../game/meadow';
 import { Patch, World } from '../game/world';
-import { hash2 } from '../game/math';
+import { clamp, hash2 } from '../game/math';
+
+/** What drawAnimals needs; both game modes provide it. */
+interface AnimalScene {
+  sheep: Sheep[];
+  dog: Dog;
+  stats: DogStats;
+  boneTime: number;
+  whistleTime: number;
+}
+
+/** Visible world rectangle, in metres. */
+interface Bounds {
+  left: number;
+  right: number;
+  bottom: number;
+  top: number;
+}
 import { Sprite, dogSprite, drawSprite, sheepSprite } from './sprites';
 
 interface Particle {
@@ -55,6 +75,8 @@ export class Renderer {
   private texts: FloatText[] = [];
   private rings: Ring[] = [];
   private shake = 0;
+  /** Pre-rendered hill shading for the current meadow (2 px per metre, drawn smoothed). */
+  private groundCache: { key: number; canvas: HTMLCanvasElement } | null = null;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -97,16 +119,21 @@ export class Renderer {
 
   // -------------------------------------------------------------- frame
 
-  render(world: World, dt: number, t: number) {
-    const ctx = this.ctx;
-    this.k = this.w / world.viewW;
-    const k = this.k;
-    if (Math.abs(this.spriteK - k) > 0.5) {
+  private ensureSprites(k: number) {
+    // Re-render sprites only when the zoom changes noticeably.
+    if (Math.abs(this.spriteK - k) / Math.max(1, this.spriteK) > 0.08) {
       this.spriteK = k;
       this.sheepSprite = sheepSprite(k * 1.15);
       this.lambSprite = sheepSprite(k * 1.15, '#fffaf0');
       this.dogSprite = dogSprite(k * 1.15);
     }
+  }
+
+  render(world: World, dt: number, t: number) {
+    const ctx = this.ctx;
+    this.k = this.w / world.viewW;
+    const k = this.k;
+    this.ensureSprites(k);
 
     let ox = 0;
     let oy = 0;
@@ -125,8 +152,9 @@ export class Renderer {
     this.drawPatches(world, sx, sy, t);
     this.drawPen(world, sx, sy);
     this.drawWalls(world, sx, sy, top);
-    this.drawObstacles(world, sx, sy, top);
-    this.drawAnimals(world, sx, sy, t);
+    const bounds = { left, right: left + world.viewW, bottom: world.camY, top };
+    this.drawObstacles(world.level.obstacles, bounds, sx, sy);
+    this.drawAnimals(world, bounds, sx, sy, t);
     this.drawEffects(dt, sx, sy);
     this.drawPatchLabels(world, sx, sy, t);
 
@@ -142,6 +170,333 @@ export class Renderer {
     v.addColorStop(1, 'rgba(0,30,10,0.28)');
     ctx.fillStyle = v;
     ctx.fillRect(0, 0, this.w, this.h);
+  }
+
+  // ------------------------------------------------------------ meadow
+
+  renderMeadow(m: Meadow, dt: number, t: number) {
+    const ctx = this.ctx;
+    this.k = this.w / m.viewW;
+    const k = this.k;
+    this.ensureSprites(k);
+    let ox = 0;
+    let oy = 0;
+    if (this.shake > 0.01) {
+      ox = (Math.random() - 0.5) * this.shake * k;
+      oy = (Math.random() - 0.5) * this.shake * k;
+      this.shake *= Math.pow(0.02, dt);
+    }
+    const left = m.viewLeft();
+    const bottom = m.viewBottom();
+    const sx = (x: number) => (x - left) * k + ox;
+    const sy = (y: number) => this.h - (y - bottom) * k + oy;
+    const b: Bounds = { left, right: left + m.viewW, bottom, top: bottom + m.viewH };
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.drawMeadowGround(m, b, sx, sy);
+    this.drawStreams(m, sx, sy, t);
+    this.drawMeadowPen(m, sx, sy);
+    this.drawMeadowWalls(m, b, sx, sy);
+    this.drawObstacles(m.obstacles, b, sx, sy);
+    this.drawAnimals(m, b, sx, sy, t);
+    this.drawEffects(dt, sx, sy);
+    this.drawSunset(m);
+    this.drawPointers(m, sx, sy, t);
+  }
+
+  private drawMeadowGround(m: Meadow, b: Bounds, sx: (x: number) => number, sy: (y: number) => number) {
+    const ctx = this.ctx;
+    const k = this.k;
+    const W = m.def.width;
+    const H = m.def.height;
+    ctx.fillStyle = '#2b5a20';
+    ctx.fillRect(0, 0, this.w, this.h);
+
+    // Rolling hills: smooth noise shading, rendered once per meadow and scaled up smoothly.
+    const ground = this.meadowGround(m);
+    const ppm = ground.width / W;
+    const vx0 = Math.max(0, b.left);
+    const vy0 = Math.max(0, b.bottom);
+    const vx1 = Math.min(W, b.right);
+    const vy1 = Math.min(H, b.top);
+    if (vx1 > vx0 && vy1 > vy0) {
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(
+        ground,
+        vx0 * ppm, (H - vy1) * ppm, (vx1 - vx0) * ppm, (vy1 - vy0) * ppm,
+        sx(vx0), sy(vy1), (vx1 - vx0) * k, (vy1 - vy0) * k,
+      );
+    }
+
+    // Flowers and tufts.
+    const cell = 1.6;
+    for (let cx = Math.max(0, Math.floor(b.left / cell)); cx < Math.min(W / cell, b.right / cell + 1); cx++) {
+      for (let cy = Math.max(0, Math.floor(b.bottom / cell)); cy < Math.min(H / cell, b.top / cell + 1); cy++) {
+        const h = hash2(cx, cy, m.def.seed);
+        if (h > 0.45) continue;
+        const px = sx((cx + hash2(cx, cy, 7)) * cell);
+        const py = sy((cy + hash2(cx, cy, 9)) * cell);
+        if (h < 0.04) {
+          ctx.fillStyle = '#ffffff';
+          dot(ctx, px, py, 0.09 * k);
+          ctx.fillStyle = '#ffd84a';
+          dot(ctx, px, py, 0.04 * k);
+        } else if (h < 0.07) {
+          ctx.fillStyle = '#ffe14d';
+          dot(ctx, px, py, 0.07 * k);
+        } else {
+          ctx.fillStyle = h < 0.25 ? 'rgba(25,80,15,0.3)' : 'rgba(180,225,120,0.3)';
+          ctx.fillRect(px, py, 0.08 * k, 0.28 * k);
+          ctx.fillRect(px + 0.12 * k, py + 0.05 * k, 0.07 * k, 0.22 * k);
+        }
+      }
+    }
+
+    // Hedgerow around the edge of the field.
+    ctx.fillStyle = '#224d19';
+    const step = 2.4;
+    const ring = (x: number, y: number, i: number) => {
+      if (x < b.left - 3 || x > b.right + 3 || y < b.bottom - 3 || y > b.top + 3) return;
+      dot(ctx, sx(x), sy(y), (1.3 + hash2(i, 3, m.def.seed) * 0.6) * k);
+    };
+    for (let x = 0, i = 0; x <= W; x += step, i++) {
+      ring(x, -1.2, i);
+      ring(x, H + 1.2, i + 500);
+    }
+    for (let y = 0, i = 0; y <= H; y += step, i++) {
+      ring(-1.2, y, i + 1000);
+      ring(W + 1.2, y, i + 1500);
+    }
+  }
+
+  private meadowGround(m: Meadow): HTMLCanvasElement {
+    const key = m.def.id * 100000 + m.def.seed;
+    if (this.groundCache?.key === key) return this.groundCache.canvas;
+    const ppm = 2;
+    const W = m.def.width;
+    const H = m.def.height;
+    const c = document.createElement('canvas');
+    c.width = Math.ceil(W * ppm);
+    c.height = Math.ceil(H * ppm);
+    const g = c.getContext('2d')!;
+    const img = g.createImageData(c.width, c.height);
+    for (let py = 0; py < c.height; py++) {
+      const y = H - py / ppm;
+      for (let px = 0; px < c.width; px++) {
+        const x = px / ppm;
+        const n = smoothNoise(x / 22, y / 22, m.def.seed) * 0.75 + smoothNoise(x / 7, y / 7, m.def.seed + 1) * 0.25;
+        const [r, gg, bb] = hslToRgb((96 + n * 8) / 360, (50 + n * 6) / 100, (36 + n * 15) / 100);
+        const i = (py * c.width + px) * 4;
+        img.data[i] = r;
+        img.data[i + 1] = gg;
+        img.data[i + 2] = bb;
+        img.data[i + 3] = 255;
+      }
+    }
+    g.putImageData(img, 0, 0);
+    this.groundCache = { key, canvas: c };
+    return c;
+  }
+
+  private drawStreams(m: Meadow, sx: (x: number) => number, sy: (y: number) => number, t: number) {
+    const ctx = this.ctx;
+    const k = this.k;
+    for (const st of m.def.streams) {
+      const path = () => {
+        ctx.beginPath();
+        st.points.forEach(([x, y], i) => (i ? ctx.lineTo(sx(x), sy(y)) : ctx.moveTo(sx(x), sy(y))));
+      };
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      path();
+      ctx.strokeStyle = '#6e5d3c';
+      ctx.lineWidth = (st.width + 1.4) * k;
+      ctx.stroke();
+      path();
+      ctx.strokeStyle = '#3f86bd';
+      ctx.lineWidth = st.width * k;
+      ctx.stroke();
+      path();
+      ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+      ctx.lineWidth = st.width * 0.25 * k;
+      ctx.setLineDash([1.2 * k, 2.4 * k]);
+      ctx.lineDashOffset = -t * 1.5 * k;
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      for (const br of st.bridges) {
+        const y = streamYAt(st, br.x);
+        const half = st.width / 2 + 1.1;
+        const x0 = sx(br.x - br.w / 2);
+        const y0 = sy(y + half);
+        ctx.fillStyle = 'rgba(0,0,0,0.25)';
+        ctx.fillRect(x0 + 0.25 * k, y0 + 0.3 * k, br.w * k, half * 2 * k);
+        ctx.fillStyle = '#9a6f43';
+        ctx.fillRect(x0, y0, br.w * k, half * 2 * k);
+        ctx.strokeStyle = '#6d4a2a';
+        ctx.lineWidth = 0.08 * k;
+        for (let yy = -half; yy <= half; yy += 0.7) {
+          ctx.beginPath();
+          ctx.moveTo(x0, sy(y + yy));
+          ctx.lineTo(x0 + br.w * k, sy(y + yy));
+          ctx.stroke();
+        }
+        ctx.fillStyle = '#5c3d22';
+        ctx.fillRect(x0 - 0.15 * k, y0, 0.3 * k, half * 2 * k);
+        ctx.fillRect(x0 + br.w * k - 0.15 * k, y0, 0.3 * k, half * 2 * k);
+      }
+    }
+  }
+
+  private drawMeadowWalls(m: Meadow, b: Bounds, sx: (x: number) => number, sy: (y: number) => number) {
+    const ctx = this.ctx;
+    const k = this.k;
+    for (const [ax, ay, bx, by] of m.def.walls) {
+      const len = Math.hypot(bx - ax, by - ay);
+      const n = Math.max(1, Math.round(len / 0.8));
+      for (let i = 0; i <= n; i++) {
+        const x = ax + ((bx - ax) * i) / n;
+        const y = ay + ((by - ay) * i) / n;
+        if (x < b.left - 2 || x > b.right + 2 || y < b.bottom - 2 || y > b.top + 2) continue;
+        const h = hash2(Math.round(x * 10), Math.round(y * 10), 5);
+        ctx.fillStyle = `hsl(40, 6%, ${50 + h * 22}%)`;
+        roundRect(ctx, sx(x) - 0.42 * k, sy(y) - 0.38 * k, 0.84 * k, 0.76 * k, 0.24 * k);
+        ctx.fill();
+      }
+    }
+  }
+
+  private drawMeadowPen(m: Meadow, sx: (x: number) => number, sy: (y: number) => number) {
+    const ctx = this.ctx;
+    const k = this.k;
+    const p = m.pen;
+    ctx.fillStyle = '#d8c27a';
+    ctx.fillRect(sx(p.left), sy(p.top), (p.right - p.left) * k, (p.top - p.bottom) * k);
+    ctx.fillStyle = 'rgba(160,120,50,0.25)';
+    for (let i = 0; i < 40; i++) {
+      const x = p.left + hash2(i, 1, 2) * (p.right - p.left);
+      const y = p.bottom + hash2(i, 2, 2) * (p.top - p.bottom);
+      ctx.fillRect(sx(x), sy(y), 0.5 * k, 0.06 * k);
+    }
+    // Fences, leaving the gate open.
+    const sides: [string, number, number, number, number][] = [
+      ['south', p.left, p.bottom, p.right, p.bottom],
+      ['north', p.left, p.top, p.right, p.top],
+      ['west', p.left, p.bottom, p.left, p.top],
+      ['east', p.right, p.bottom, p.right, p.top],
+    ];
+    for (const [side, ax, ay, bx, by] of sides) {
+      if (side !== p.gate) {
+        this.fence(sx(ax), sy(ay), sx(bx), sy(by));
+        continue;
+      }
+      if (ay === by) {
+        this.fence(sx(ax), sy(ay), sx(p.gateA), sy(by));
+        this.fence(sx(p.gateB), sy(ay), sx(bx), sy(by));
+        ctx.fillStyle = '#4a2f18';
+        dot(ctx, sx(p.gateA), sy(ay), 0.32 * k);
+        dot(ctx, sx(p.gateB), sy(ay), 0.32 * k);
+      } else {
+        this.fence(sx(ax), sy(ay), sx(bx), sy(p.gateA));
+        this.fence(sx(ax), sy(p.gateB), sx(bx), sy(by));
+        ctx.fillStyle = '#4a2f18';
+        dot(ctx, sx(ax), sy(p.gateA), 0.32 * k);
+        dot(ctx, sx(ax), sy(p.gateB), 0.32 * k);
+      }
+    }
+    // Count sign.
+    const cx = sx((p.left + p.right) / 2);
+    const cy = sy(p.top - 1.4);
+    ctx.font = `800 ${0.85 * k}px ${UI_FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#5c3d22';
+    roundRect(ctx, cx - 2 * k, cy - 0.55 * k, 4 * k, 1.1 * k, 0.2 * k);
+    ctx.fill();
+    ctx.fillStyle = '#fff6dc';
+    ctx.fillText(`PEN ${m.penned}/${m.total}`, cx, cy);
+  }
+
+  /** Warm evening light that deepens toward sunset. */
+  private drawSunset(m: Meadow) {
+    const ctx = this.ctx;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const p = m.time / m.limit;
+    const warm = smoothstep(0.4, 1, p);
+    if (warm > 0) {
+      ctx.fillStyle = `rgba(255,140,40,${(0.22 * warm).toFixed(3)})`;
+      ctx.fillRect(0, 0, this.w, this.h);
+    }
+    const dusk = smoothstep(0.8, 1, p);
+    if (dusk > 0) {
+      ctx.fillStyle = `rgba(60,20,90,${(0.28 * dusk).toFixed(3)})`;
+      ctx.fillRect(0, 0, this.w, this.h);
+    }
+    const v = ctx.createRadialGradient(this.w / 2, this.h / 2, this.h * 0.35, this.w / 2, this.h / 2, this.h * 0.8);
+    v.addColorStop(0, 'rgba(0,0,0,0)');
+    v.addColorStop(1, `rgba(0,25,10,${(0.25 + dusk * 0.25).toFixed(3)})`);
+    ctx.fillStyle = v;
+    ctx.fillRect(0, 0, this.w, this.h);
+  }
+
+  /** Edge-of-screen arrows to the pen and to the nearest sheep still out grazing. */
+  private drawPointers(m: Meadow, sx: (x: number) => number, sy: (y: number) => number, t: number) {
+    const p = m.pen;
+    this.pointer(sx((p.left + p.right) / 2), sy((p.bottom + p.top) / 2), '🏠', '#ffe7a8', t);
+
+    let best: Sheep | null = null;
+    let bestD = Infinity;
+    for (const s of m.sheep) {
+      if (s.state !== 'active' || s.gathered) continue;
+      const d = Math.hypot(s.x - m.dog.x, s.y - m.dog.y);
+      if (d < bestD) {
+        bestD = d;
+        best = s;
+      }
+    }
+    if (best) {
+      let n = 0;
+      for (const s of m.sheep) if (s.state === 'active' && !s.gathered && Math.hypot(s.x - best.x, s.y - best.y) < 8) n++;
+      this.pointer(sx(best.x), sy(best.y), '🐑' + n, '#ffffff', t);
+    }
+  }
+
+  private pointer(px: number, py: number, label: string, color: string, t: number) {
+    const ctx = this.ctx;
+    const margin = 34 * this.dpr;
+    const topInset = 92 * this.dpr;
+    const bottomInset = 110 * this.dpr;
+    if (px > margin && px < this.w - margin && py > topInset && py < this.h - bottomInset) return;
+    const cx = this.w / 2;
+    const cy = this.h / 2;
+    const dx = px - cx;
+    const dy = py - cy;
+    // Scale the direction until it hits the inset rectangle.
+    const sxk = dx === 0 ? Infinity : ((dx > 0 ? this.w - margin : margin) - cx) / dx;
+    const syk = dy === 0 ? Infinity : ((dy > 0 ? this.h - bottomInset : topInset) - cy) / dy;
+    const s = Math.min(sxk, syk);
+    const x = cx + dx * s;
+    const y = cy + dy * s;
+    const a = Math.atan2(dy, dx);
+    const pulse = 1 + Math.sin(t * 5) * 0.06;
+    const r = 20 * this.dpr * pulse;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = 'rgba(20,40,15,0.75)';
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(x + Math.cos(a) * (r + 10 * this.dpr), y + Math.sin(a) * (r + 10 * this.dpr));
+    ctx.lineTo(x + Math.cos(a + 0.5) * r, y + Math.sin(a + 0.5) * r);
+    ctx.lineTo(x + Math.cos(a - 0.5) * r, y + Math.sin(a - 0.5) * r);
+    ctx.closePath();
+    ctx.fill();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `800 ${Math.round(12 * this.dpr)}px ${EMOJI}`;
+    ctx.fillStyle = color;
+    ctx.fillText(label, x, y + 1);
   }
 
   private drawGround(world: World, sx: (x: number) => number, sy: (y: number) => number, left: number, top: number) {
@@ -418,18 +773,27 @@ export class Renderer {
     ctx.globalAlpha = 1;
   }
 
-  private drawObstacles(world: World, sx: (x: number) => number, sy: (y: number) => number, top: number) {
+  private drawObstacles(obstacles: Obstacle[], b: Bounds, sx: (x: number) => number, sy: (y: number) => number) {
     const ctx = this.ctx;
     const k = this.k;
-    for (const o of world.level.obstacles) {
-      if (o.y < world.camY - 4 || o.y > top + 4) continue;
+    for (const o of obstacles) {
+      if (o.y < b.bottom - 4 || o.y > b.top + 4 || o.x < b.left - 4 || o.x > b.right + 4) continue;
       const x = sx(o.x);
       const y = sy(o.y);
       ctx.fillStyle = 'rgba(0,0,0,0.25)';
       ctx.beginPath();
       ctx.ellipse(x + 0.2 * k, y + 0.25 * k, o.r * k, o.r * 0.8 * k, 0, 0, Math.PI * 2);
       ctx.fill();
-      if (o.kind === 'rock') {
+      if (o.kind === 'tree') {
+        ctx.fillStyle = 'rgba(0,0,0,0.22)';
+        dot(ctx, x + 0.5 * k, y + 0.6 * k, o.r * 1.5 * k);
+        ctx.fillStyle = '#245c1e';
+        dot(ctx, x, y, o.r * 1.4 * k);
+        ctx.fillStyle = '#2f7526';
+        dot(ctx, x - o.r * 0.35 * k, y - o.r * 0.35 * k, o.r * 0.95 * k);
+        ctx.fillStyle = '#3f8f33';
+        dot(ctx, x - o.r * 0.55 * k, y - o.r * 0.55 * k, o.r * 0.5 * k);
+      } else if (o.kind === 'rock') {
         ctx.fillStyle = '#8d8a80';
         dot(ctx, x, y, o.r * k);
         ctx.fillStyle = '#aaa79c';
@@ -445,11 +809,11 @@ export class Renderer {
     }
   }
 
-  private drawAnimals(world: World, sx: (x: number) => number, sy: (y: number) => number, t: number) {
+  private drawAnimals(world: AnimalScene, b: Bounds, sx: (x: number) => number, sy: (y: number) => number, t: number) {
     const ctx = this.ctx;
     const k = this.k;
-    const bottom = world.camY - 3;
-    const top = world.camY + world.viewH + 3;
+    const bottom = b.bottom - 3;
+    const top = b.top + 3;
 
     // Shadows first so no sheep's shadow covers another sheep.
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -572,4 +936,38 @@ export function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w
   ctx.arcTo(x, y + h, x, y, r);
   ctx.arcTo(x, y, x + w, y, r);
   ctx.closePath();
+}
+
+function smoothstep(a: number, b: number, x: number): number {
+  const t = clamp((x - a) / (b - a), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+/** Smooth value noise in [0, 1). */
+function smoothNoise(x: number, y: number, seed: number): number {
+  const xi = Math.floor(x);
+  const yi = Math.floor(y);
+  const fx = x - xi;
+  const fy = y - yi;
+  const u = fx * fx * (3 - 2 * fx);
+  const v = fy * fy * (3 - 2 * fy);
+  const a = hash2(xi, yi, seed);
+  const b = hash2(xi + 1, yi, seed);
+  const c = hash2(xi, yi + 1, seed);
+  const d = hash2(xi + 1, yi + 1, seed);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const f = (t: number) => {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  return [Math.round(f(h + 1 / 3) * 255), Math.round(f(h) * 255), Math.round(f(h - 1 / 3) * 255)];
 }

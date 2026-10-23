@@ -1,39 +1,16 @@
 import { DogStats } from './dog';
+import { Dog, FLOCK, FlockSim, Segment, Sheep, barkAt, collideCircle, makeSheep, moveDog, turnToward } from './flock';
 import { LevelDef, PatchDef, PenGeometry, penGeometry } from './levels';
-import { Rng, clamp, segmentT } from './math';
+import { Rng, clamp } from './math';
 
 // ---------------------------------------------------------------- tuning
 
+/** Trail-mode rules. Flocking itself lives in flock.ts and is shared with round-up mode. */
 export const TUNING = {
-  sheepRadius: 0.42,
-  lambRadius: 0.3,
-  neighborRadius: 2.4,
-  separationDist: 1.05,
-  separation: 7,
-  alignment: 1.1,
-  cohesion: 0.7,
-  /** Frightened sheep bunch up (the "selfish herd"), which is what makes herding work. */
-  panicCohesion: 2.2,
-  flee: 26,
-  /** Sheep pick up some of their neighbours' panic, so the flock moves as one. */
-  panicSpread: 0.65,
-  panicDecay: 0.7,
-  calmSpeed: 2.8,
-  panicSpeed: 6.4,
-  lambSpeedMult: 0.85,
   /** Sheep that were recently driven keep trotting uphill at about this speed... */
-  drift: 2.3,
-  /** ...but left alone they slow to a graze. */
-  grazeDrift: 0.5,
-  /** Strays want to get back to the flock... */
-  rejoin: 1.6,
-  /** ...and sheep follow the ones that are moving. */
-  urgeSpread: 0.9,
-  /** How long the urge to keep moving lasts after the dog's pressure (1/s decay). */
-  urgeDecay: 0.25,
-  wander: 0.7,
-  calmDamping: 1.4,
-  bogSpeedMult: 0.35,
+  drift: 2.0,
+  /** ...and the urge to keep going fades this fast (1/s) once the dog lets up. */
+  urgeDecay: 0.35,
   maxSheep: 1500,
   /** How far behind the bottom of the screen a sheep can fall before it is lost. */
   lostMargin: 1.5,
@@ -41,42 +18,11 @@ export const TUNING = {
   stallSeconds: 6,
   /** ...or after this long in total. */
   finaleSeconds: 40,
-  dogRadius: 0.5,
 };
 
 // ----------------------------------------------------------------- types
 
-export type SheepState = 'active' | 'penned' | 'lost';
-
-export interface Sheep {
-  id: number;
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  heading: number;
-  panic: number;
-  /** Lingering urge to keep moving after being driven, 0..1. */
-  urge: number;
-  lamb: boolean;
-  state: SheepState;
-  /** Patch ids this sheep (or the sheep it was cloned from) already used. */
-  used: Set<number>;
-  wander: number;
-  scatter: number;
-  /** Animation phase. */
-  phase: number;
-  inBog: boolean;
-}
-
-export interface Dog {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  heading: number;
-  barkCooldown: number;
-}
+export type { Dog, Segment, Sheep, SheepState } from './flock';
 
 export interface Patch extends PatchDef {
   id: number;
@@ -85,13 +31,6 @@ export interface Patch extends PatchDef {
   /** Sheep gained here recently, for the floating "+N" label. */
   gain: number;
   gainTimer: number;
-}
-
-export interface Segment {
-  ax: number;
-  ay: number;
-  bx: number;
-  by: number;
 }
 
 export type GameEvent =
@@ -141,8 +80,7 @@ export class World {
   target = { u: 0.5, v: 0.86 };
 
   private nextId = 1;
-  private grid = new Map<number, number[]>();
-  private gridPool: number[][] = [];
+  private flock = new FlockSim();
   private centroid = { x: 0, y: 0, n: 0 };
 
   constructor(level: LevelDef, stats: DogStats, viewAspect = 2, seed = level.seed) {
@@ -163,7 +101,11 @@ export class World {
     for (let i = 0; i < level.startSheep; i++) {
       const a = this.rng.range(0, Math.PI * 2);
       const r = Math.sqrt(this.rng.next()) * 3;
-      this.addSheep(level.width / 2 + Math.cos(a) * r, 10 + Math.sin(a) * r);
+      const s = this.addSheep(level.width / 2 + Math.cos(a) * r, 10 + Math.sin(a) * r);
+      if (s) {
+        s.urge = 0.6;
+        s.heading = Math.PI / 2;
+      }
     }
   }
 
@@ -173,23 +115,8 @@ export class World {
 
   addSheep(x: number, y: number, parent?: Sheep, lamb = false): Sheep | null {
     if (this.aliveCount() >= TUNING.maxSheep) return null;
-    const s: Sheep = {
-      id: this.nextId++,
-      x,
-      y,
-      vx: parent ? parent.vx + this.rng.range(-1, 1) : 0,
-      vy: parent ? parent.vy + this.rng.range(-1, 1) : 0,
-      heading: parent ? parent.heading : Math.PI / 2 + this.rng.range(-0.5, 0.5),
-      panic: parent ? parent.panic : 0,
-      urge: parent ? parent.urge : 0.6,
-      lamb,
-      state: 'active',
-      used: parent ? new Set(parent.used) : new Set(),
-      wander: this.rng.range(0, Math.PI * 2),
-      scatter: 0,
-      phase: this.rng.range(0, 10),
-      inBog: false,
-    };
+    const s = makeSheep(this.nextId++, x, y, this.rng, parent, lamb);
+    s.gathered = true;
     this.sheep.push(s);
     return s;
   }
@@ -218,20 +145,8 @@ export class World {
 
   bark(): boolean {
     if (this.dog.barkCooldown > 0 || this.phase === 'done') return false;
-    const { barkRadius, barkForce, barkCooldown } = this.stats;
-    this.dog.barkCooldown = barkCooldown;
-    for (const s of this.sheep) {
-      if (s.state !== 'active') continue;
-      const dx = s.x - this.dog.x;
-      const dy = s.y - this.dog.y;
-      const d = Math.hypot(dx, dy);
-      if (d > barkRadius || d < 0.01) continue;
-      const k = (1 - d / barkRadius) * barkForce;
-      s.vx += (dx / d) * k;
-      s.vy += (dy / d) * k;
-      s.panic = 1;
-    }
-    this.events.push({ type: 'bark', x: this.dog.x, y: this.dog.y, radius: barkRadius });
+    barkAt(this.dog, this.sheep, this.stats);
+    this.events.push({ type: 'bark', x: this.dog.x, y: this.dog.y, radius: this.stats.barkRadius });
     return true;
   }
 
@@ -289,215 +204,56 @@ export class World {
 
   private updateDog(dt: number): void {
     const d = this.dog;
-    const boost = this.boneTime > 0 ? 1.5 : 1;
-    const maxSpeed = this.stats.maxSpeed * boost;
-    const accel = this.stats.accel * (this.boneTime > 0 ? 1.6 : 1);
-
     const tx = this.viewLeft() + this.target.u * this.viewW;
     const ty = this.camY + (1 - this.target.v) * this.viewH;
-    const dx = tx - d.x;
-    const dy = ty - d.y;
-    const dist = Math.hypot(dx, dy);
-
-    // Steer toward the finger with limited acceleration: this is the "lag".
-    const arrive = Math.min(1, dist / 2.5);
-    const desX = dist > 0.01 ? (dx / dist) * maxSpeed * arrive : 0;
-    const desY = dist > 0.01 ? (dy / dist) * maxSpeed * arrive : 0;
-    let sx = desX - d.vx;
-    let sy = desY - d.vy;
-    const sl = Math.hypot(sx, sy);
-    const maxDv = accel * dt;
-    if (sl > maxDv) {
-      sx = (sx / sl) * maxDv;
-      sy = (sy / sl) * maxDv;
-    }
-    d.vx += sx;
-    d.vy += sy;
-    d.x += d.vx * dt;
-    d.y += d.vy * dt;
-
-    collideCircle(d, TUNING.dogRadius, this.segments, this.level.obstacles);
+    moveDog(d, tx, ty, this.stats, this.boneTime > 0, dt);
+    collideCircle(d, FLOCK.dogRadius, this.segments, this.level.obstacles);
     // The dog stays on screen and out of the pen.
     const minY = this.camY + 0.6;
     const maxY = Math.min(this.camY + this.viewH - 0.6, this.pen.bottom - 0.6);
     if (d.y < minY) { d.y = minY; d.vy = Math.max(d.vy, 0); }
     if (d.y > maxY) { d.y = maxY; d.vy = Math.min(d.vy, 0); }
-
-    const speed = Math.hypot(d.vx, d.vy);
-    if (speed > 0.3) d.heading = Math.atan2(d.vy, d.vx);
-    d.barkCooldown = Math.max(0, d.barkCooldown - dt);
     this.boneTime = Math.max(0, this.boneTime - dt);
     this.whistleTime = Math.max(0, this.whistleTime - dt);
   }
 
   // -------------------------------------------------------------- sheep
 
-  private buildGrid(): void {
-    for (const list of this.grid.values()) {
-      list.length = 0;
-      this.gridPool.push(list);
-    }
-    this.grid.clear();
-    const cs = TUNING.neighborRadius;
-    for (let i = 0; i < this.sheep.length; i++) {
-      const s = this.sheep[i];
-      if (s.state === 'lost') continue;
-      const key = cellKey(Math.floor(s.x / cs), Math.floor(s.y / cs));
-      let list = this.grid.get(key);
-      if (!list) {
-        list = this.gridPool.pop() ?? [];
-        this.grid.set(key, list);
-      }
-      list.push(i);
-    }
-  }
-
   private updateSheep(dt: number): void {
-    const T = TUNING;
-    this.buildGrid();
-    const cs = T.neighborRadius;
-    const r2 = cs * cs;
-    const dog = this.dog;
-    const presence = this.stats.presence;
-    const cohesion = T.cohesion * (this.whistleTime > 0 ? 4 : 1);
-    const count = this.sheep.length;
+    const pen = this.pen;
+    const penMid = (pen.left + pen.right) / 2;
+    this.flock.step(this.sheep, {
+      dog: this.dog,
+      stats: this.stats,
+      segments: this.segments,
+      obstacles: this.level.obstacles,
+      rng: this.rng,
+      whistle: this.whistleTime > 0,
+      flockX: this.centroid.x,
+      flockY: this.centroid.y,
+      flockN: this.centroid.n,
+      extra: (s, acc, dt) => {
+        // Driven sheep keep trotting uphill for a while; left alone they slow to a graze.
+        s.urge = Math.max(s.panic, s.urge - TUNING.urgeDecay * dt);
+        // Once funnelled toward the open gate, sheep follow each other in.
+        if (s.y > pen.funnelStart) {
+          s.urge = Math.max(s.urge, 0.8);
+          acc.x += (penMid - s.x) * 0.6;
+        }
+        const drift = TUNING.drift * Math.min(1, s.urge * 1.5);
+        if (drift > 0.05) acc.y += (drift - s.vy) * 1.2;
+      },
+      speedFloor: (s) => TUNING.drift * Math.min(1, s.urge * 1.5),
+    }, dt);
 
-    for (let i = 0; i < count; i++) {
-      const s = this.sheep[i];
-      if (s.state === 'lost') continue;
-      s.phase += dt * (2 + Math.hypot(s.vx, s.vy) * 2);
-
+    for (const s of this.sheep) {
       if (s.state === 'penned') {
         this.updatePenned(s, dt);
         continue;
       }
-
-      // Neighbours.
-      let sepX = 0, sepY = 0, aliX = 0, aliY = 0, cohX = 0, cohY = 0, nPanic = 0, nUrge = 0, n = 0;
-      const cx = Math.floor(s.x / cs);
-      const cy = Math.floor(s.y / cs);
-      for (let gx = cx - 1; gx <= cx + 1; gx++) {
-        for (let gy = cy - 1; gy <= cy + 1; gy++) {
-          const list = this.grid.get(cellKey(gx, gy));
-          if (!list) continue;
-          for (const j of list) {
-            if (j === i) continue;
-            const o = this.sheep[j];
-            if (o.state !== 'active') continue;
-            const dx = s.x - o.x;
-            const dy = s.y - o.y;
-            const d2 = dx * dx + dy * dy;
-            if (d2 > r2 || d2 < 1e-6) continue;
-            const d = Math.sqrt(d2);
-            if (d < T.separationDist) {
-              const k = (T.separationDist - d) / (T.separationDist * d);
-              sepX += dx * k;
-              sepY += dy * k;
-            }
-            aliX += o.vx;
-            aliY += o.vy;
-            cohX += o.x;
-            cohY += o.y;
-            nPanic += o.panic;
-            nUrge += o.urge;
-            n++;
-          }
-        }
-      }
-
-      let ax = sepX * T.separation;
-      let ay = sepY * T.separation;
-      if (n > 0) {
-        ax += (aliX / n - s.vx) * T.alignment;
-        ay += (aliY / n - s.vy) * T.alignment;
-        const c = cohesion * (1 + T.panicCohesion * Math.min(1, s.panic));
-        ax += (cohX / n - s.x) * c;
-        ay += (cohY / n - s.y) * c;
-        s.panic = Math.max(s.panic, (nPanic / n) * T.panicSpread);
-        s.urge = Math.max(s.urge, (nUrge / n) * T.urgeSpread);
-      }
-
-      // Pull back toward the whole flock when straying from it.
-      const fdx = this.centroid.x - s.x;
-      const fdy = this.centroid.y - s.y;
-      const fd = Math.hypot(fdx, fdy);
-      const flockR = 1 + Math.sqrt(this.centroid.n) * 0.35;
-      if (fd > flockR) {
-        const k = T.rejoin * Math.min(3, fd - flockR);
-        ax += (fdx / fd) * k;
-        ay += (fdy / fd) * k;
-      }
-
-      // The dog.
-      const ddx = s.x - dog.x;
-      const ddy = s.y - dog.y;
-      const dd = Math.hypot(ddx, ddy);
-      if (dd < presence && dd > 0.01) {
-        const fear = 1 - dd / presence;
-        const k = T.flee * fear;
-        ax += (ddx / dd) * k;
-        ay += (ddy / dd) * k;
-        s.panic = Math.max(s.panic, Math.min(1, fear * 1.6));
-      }
-
-      // Wander, and trot uphill if recently driven.
-      s.urge = Math.max(s.panic, s.urge - T.urgeDecay * dt);
-      // Once funnelled toward the open gate, sheep follow each other in.
-      if (s.y > this.pen.funnelStart) {
-        s.urge = Math.max(s.urge, 0.8);
-        ax += ((this.pen.left + this.pen.right) / 2 - s.x) * 0.6;
-      }
-      const drift = T.grazeDrift + (T.drift - T.grazeDrift) * Math.min(1, s.urge * 1.5);
-      s.wander += this.rng.range(-1.5, 1.5) * dt;
-      ax += Math.cos(s.wander) * T.wander;
-      ay += Math.sin(s.wander) * T.wander + (drift - s.vy) * 0.8;
-
-      // Wall and rock avoidance (soft), hard collision below.
-      for (const seg of this.segments) {
-        const t = segmentT(s.x, s.y, seg.ax, seg.ay, seg.bx, seg.by);
-        const px = seg.ax + (seg.bx - seg.ax) * t;
-        const py = seg.ay + (seg.by - seg.ay) * t;
-        const wx = s.x - px;
-        const wy = s.y - py;
-        const wd = Math.hypot(wx, wy);
-        if (wd < 1.6 && wd > 0.001) {
-          const k = (1.6 - wd) * 6;
-          ax += (wx / wd) * k;
-          ay += (wy / wd) * k;
-        }
-      }
-
-      if (s.scatter > 0) {
-        s.scatter -= dt;
-        s.panic = 1;
-      }
-
-      s.vx += ax * dt;
-      s.vy += ay * dt;
-
-      let maxSpeed = T.calmSpeed + (T.panicSpeed - T.calmSpeed) * Math.min(1, s.panic);
-      if (s.lamb) maxSpeed *= T.lambSpeedMult;
-      if (s.inBog) maxSpeed *= T.bogSpeedMult;
-      const sp = Math.hypot(s.vx, s.vy);
-      if (sp > maxSpeed) {
-        s.vx = (s.vx / sp) * maxSpeed;
-        s.vy = (s.vy / sp) * maxSpeed;
-      }
-      if (s.panic < 0.2) {
-        // Calm sheep settle back into their trot instead of stopping dead.
-        const damp = Math.max(0, 1 - T.calmDamping * dt);
-        s.vx *= damp;
-        s.vy = drift + (s.vy - drift) * damp;
-      }
-      s.panic = Math.max(0, s.panic - T.panicDecay * dt);
-
-      s.x += s.vx * dt;
-      s.y += s.vy * dt;
-      collideCircle(s, s.lamb ? T.lambRadius : T.sheepRadius, this.segments, this.level.obstacles);
-      if (sp > 0.25) s.heading = turnToward(s.heading, Math.atan2(s.vy, s.vx), dt * 6);
-
+      if (s.state !== 'active') continue;
       // Into the pen?
-      if (s.y > this.pen.bottom + 0.6 && s.x > this.pen.left && s.x < this.pen.right) {
+      if (s.y > pen.bottom + 0.6 && s.x > pen.left && s.x < pen.right) {
         s.state = 'penned';
         s.panic = 0;
         this.penned++;
@@ -505,9 +261,8 @@ export class World {
         this.events.push({ type: 'penned', x: s.x, y: s.y });
         continue;
       }
-
       // Fell off the back of the screen?
-      if (s.y < this.camY - T.lostMargin) {
+      if (s.y < this.camY - TUNING.lostMargin) {
         s.state = 'lost';
         this.lost++;
         this.events.push({ type: 'lost', x: s.x, y: this.camY });
@@ -642,17 +397,6 @@ export class World {
 
 // ---------------------------------------------------------------- helpers
 
-function cellKey(x: number, y: number): number {
-  return (x + 512) * 65536 + (y + 512);
-}
-
-function turnToward(a: number, b: number, maxStep: number): number {
-  let d = b - a;
-  while (d > Math.PI) d -= Math.PI * 2;
-  while (d < -Math.PI) d += Math.PI * 2;
-  return a + clamp(d, -maxStep, maxStep);
-}
-
 function buildWalls(level: LevelDef, pen: PenGeometry): Segment[] {
   const w = level.width;
   const far = -10000;
@@ -665,50 +409,4 @@ function buildWalls(level: LevelDef, pen: PenGeometry): Segment[] {
     { ax: pen.right, ay: pen.bottom, bx: w, by: pen.funnelStart },
     { ax: w, ay: pen.funnelStart, bx: w, by: far },
   ];
-}
-
-/** Pushes a moving circle out of walls and rocks. */
-function collideCircle(
-  b: { x: number; y: number; vx: number; vy: number },
-  r: number,
-  segments: Segment[],
-  obstacles: LevelDef['obstacles'],
-): void {
-  for (const seg of segments) {
-    const t = segmentT(b.x, b.y, seg.ax, seg.ay, seg.bx, seg.by);
-    const px = seg.ax + (seg.bx - seg.ax) * t;
-    const py = seg.ay + (seg.by - seg.ay) * t;
-    const dx = b.x - px;
-    const dy = b.y - py;
-    const d = Math.hypot(dx, dy);
-    if (d < r && d > 1e-6) {
-      const nx = dx / d;
-      const ny = dy / d;
-      b.x = px + nx * r;
-      b.y = py + ny * r;
-      const vn = b.vx * nx + b.vy * ny;
-      if (vn < 0) {
-        b.vx -= vn * nx;
-        b.vy -= vn * ny;
-      }
-    }
-  }
-  for (const o of obstacles) {
-    const dx = b.x - o.x;
-    const dy = b.y - o.y;
-    const min = o.r + r;
-    const d2 = dx * dx + dy * dy;
-    if (d2 < min * min && d2 > 1e-6) {
-      const d = Math.sqrt(d2);
-      const nx = dx / d;
-      const ny = dy / d;
-      b.x = o.x + nx * min;
-      b.y = o.y + ny * min;
-      const vn = b.vx * nx + b.vy * ny;
-      if (vn < 0) {
-        b.vx -= vn * nx;
-        b.vy -= vn * ny;
-      }
-    }
-  }
 }

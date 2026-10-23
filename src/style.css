@@ -416,3 +416,35 @@ button {
   font-weight: 800;
   text-decoration: underline;
 }
+
+.count small {
+  display: block;
+  font-size: 11px;
+  font-weight: 800;
+  color: #6a7462;
+  margin-top: -2px;
+}
+
+#progress-fill.sun {
+  background: linear-gradient(90deg, #ff7a3d, #ffd54a);
+}
+
+.mode-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 900;
+  vertical-align: middle;
+}
+
+.card.small {
+  padding: 12px 16px;
+}
+
+.card.small .btn {
+  font-size: 16px;
+  padding: 10px;
+}

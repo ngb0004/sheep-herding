@@ -8,6 +8,10 @@ export interface SaveData {
   /** Best stars per level id. */
   stars: Record<number, number>;
   best: Record<number, number>;
+  /** Round-up (open meadow) progress, kept separately from trail mode. */
+  meadowUnlocked: number;
+  meadowStars: Record<number, number>;
+  meadowBest: Record<number, number>;
   dog: DogLevels;
   sound: boolean;
 }
@@ -15,7 +19,11 @@ export interface SaveData {
 const KEY = 'flock-rescue.save.v1';
 
 export function freshSave(): SaveData {
-  return { version: 1, wool: 0, unlocked: 1, stars: {}, best: {}, dog: { ...DEFAULT_LEVELS }, sound: true };
+  return {
+    version: 1, wool: 0, unlocked: 1, stars: {}, best: {},
+    meadowUnlocked: 1, meadowStars: {}, meadowBest: {},
+    dog: { ...DEFAULT_LEVELS }, sound: true,
+  };
 }
 
 export function loadSave(): SaveData {

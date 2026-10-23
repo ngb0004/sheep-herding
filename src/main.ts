@@ -1,12 +1,19 @@
 import { haptic, sfx } from './audio';
-import { Autopilot } from './game/autopilot';
+import { Autopilot, MeadowPilot } from './game/autopilot';
 import { MAX_STAT_LEVEL, STAT_IDS, STAT_INFO, StatId, dogStats, upgradeCost } from './game/dog';
 import { getLevel, starTargets } from './game/levels';
+import { Meadow } from './game/meadow';
+import { getMeadow } from './game/meadowLevels';
 import { World } from './game/world';
 import { Renderer } from './render/renderer';
 import { SaveData, loadSave, writeSave } from './save';
 
 type Screen = 'home' | 'playing' | 'paused' | 'results' | 'upgrades';
+/** Round-up: open meadow, gather and pen before sunset. Trail: the original scrolling run. */
+type Mode = 'roundup' | 'trail';
+
+/** Share of the field's sheep penned for 1, 2 and 3 stars in round-up mode. */
+const MEADOW_STARS = [0.5, 0.75, 0.95];
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const stage = $('stage');
@@ -26,8 +33,9 @@ sfx.enabled = save.sound;
 
 const params = new URLSearchParams(location.search);
 let screen: Screen = 'home';
-let levelId = Number(params.get('level')) || save.unlocked;
-let world = makeWorld(levelId);
+let mode: Mode = params.get('mode') === 'trail' ? 'trail' : 'roundup';
+let levelId = Number(params.get('level')) || unlockedFor(mode);
+let world: World | Meadow = makeWorld(mode, levelId);
 let aspect = 2;
 let lastCount = 0;
 let doneAt = 0;
@@ -37,8 +45,17 @@ let pointerActive = false;
 let barkWasReady = true;
 const keys = new Set<string>();
 // ?auto=good|bad lets the autopilot herd (for testing and recording ad clips).
-const autoMode = params.get('auto');
-let pilot: Autopilot | null = autoMode ? new Autopilot(autoMode === 'bad') : null;
+let autoMode = params.get('auto');
+let pilot: Autopilot | MeadowPilot | null = null;
+
+function makePilot() {
+  if (!autoMode) return null;
+  return world instanceof Meadow ? new MeadowPilot() : new Autopilot(autoMode === 'bad');
+}
+
+function unlockedFor(m: Mode): number {
+  return m === 'roundup' ? save.meadowUnlocked : save.unlocked;
+}
 
 // ---------------------------------------------------------------- layout
 
@@ -56,8 +73,14 @@ function layout() {
   world.setViewAspect(aspect);
 }
 
-function makeWorld(id: number): World {
-  return new World(getLevel(id), dogStats(save.dog), aspect || 2);
+function makeWorld(m: Mode, id: number): World | Meadow {
+  return m === 'roundup'
+    ? new Meadow(getMeadow(id), dogStats(save.dog), aspect || 2)
+    : new World(getLevel(id), dogStats(save.dog), aspect || 2);
+}
+
+function levelName(w: World | Meadow): string {
+  return w instanceof Meadow ? w.def.name : w.level.name;
 }
 
 window.addEventListener('resize', layout);
@@ -147,7 +170,8 @@ function frame(now: number) {
     acc += dt;
     let steps = 0;
     while (acc >= 1 / 60 && steps < 4) {
-      pilot?.update(world, 1 / 60);
+      if (pilot instanceof MeadowPilot && world instanceof Meadow) pilot.update(world, 1 / 60);
+      else if (pilot instanceof Autopilot && world instanceof World) pilot.update(world, 1 / 60);
       world.step(1 / 60);
       acc -= 1 / 60;
       steps++;
@@ -161,10 +185,16 @@ function frame(now: number) {
   } else {
     acc = 0;
   }
-  renderer.render(world, screen === 'playing' ? dt : 0, now / 1000);
+  const rdt = screen === 'playing' ? dt : 0;
+  if (world instanceof Meadow) renderer.renderMeadow(world, rdt, now / 1000);
+  else renderer.render(world, rdt, now / 1000);
 }
 
 function handleEvents() {
+  if (world instanceof Meadow) {
+    handleMeadowEvents(world);
+    return;
+  }
   for (const e of world.events) {
     switch (e.type) {
       case 'gain':
@@ -209,7 +239,69 @@ function handleEvents() {
   world.events.length = 0;
 }
 
+function handleMeadowEvents(m: Meadow) {
+  for (const e of m.events) {
+    switch (e.type) {
+      case 'joined':
+        sfx.pop(e.n * 3);
+        renderer.floatText('+' + e.n, e.x, e.y + 1.5, '#d8ff6a', 1.3);
+        renderer.burst(e.x, e.y, '#ffffff', 4, 2.5, 0.14);
+        sfx.baa(1.1);
+        haptic(10);
+        break;
+      case 'penned':
+        sfx.penned();
+        renderer.burst(e.x, e.y, '#ffe27a', 2, 2, 0.1);
+        if (Math.random() < 0.08) sfx.baa();
+        break;
+      case 'bark':
+        sfx.bark();
+        renderer.ring(e.x, e.y, e.radius, 'rgba(255,255,255,0.9)');
+        renderer.addShake(0.25);
+        break;
+      case 'warning':
+        showBanner('Sun’s going down!');
+        sfx.lost();
+        break;
+      case 'done':
+        doneAt = performance.now();
+        showBanner(e.allPenned ? 'All home!' : m.penned > 0 ? `${m.penned} penned` : 'Night fell…');
+        if (e.allPenned) sfx.fanfare();
+        break;
+    }
+  }
+  m.events.length = 0;
+}
+
 function updateHud() {
+  const cd = world.dog.barkCooldown / world.stats.barkCooldown;
+  barkBtn.style.setProperty('--cd', cd.toFixed(3));
+  const ready = cd <= 0;
+  if (ready && !barkWasReady) {
+    barkBtn.classList.remove('ready');
+    void barkBtn.offsetWidth;
+    barkBtn.classList.add('ready');
+  }
+  barkWasReady = ready;
+
+  if (world instanceof Meadow) {
+    const m = world;
+    const left = Math.ceil(m.timeLeft());
+    levelNameEl.textContent = `☀️ ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} · ${m.def.name}`;
+    progressEl.style.width = ((m.timeLeft() / m.limit) * 100).toFixed(1) + '%';
+    const withYou = m.flockCenter().n;
+    const key = m.penned * 10000 + withYou;
+    if (key !== lastCount) {
+      countEl.innerHTML = `🏠 ${m.penned}/${m.total}<small>${withYou} with you</small>`;
+      if (key > lastCount) {
+        countEl.classList.add('pop');
+        setTimeout(() => countEl.classList.remove('pop'), 90);
+      }
+      lastCount = key;
+    }
+    return;
+  }
+
   const count = world.penned + world.activeCount();
   if (count !== lastCount) {
     countEl.textContent = '🐑 ' + count;
@@ -220,15 +312,6 @@ function updateHud() {
     lastCount = count;
   }
   progressEl.style.width = (world.progress() * 100).toFixed(1) + '%';
-  const cd = world.dog.barkCooldown / world.stats.barkCooldown;
-  barkBtn.style.setProperty('--cd', cd.toFixed(3));
-  const ready = cd <= 0;
-  if (ready && !barkWasReady) {
-    barkBtn.classList.remove('ready');
-    void barkBtn.offsetWidth;
-    barkBtn.classList.add('ready');
-  }
-  barkWasReady = ready;
   if (world.phase === 'finale') {
     levelNameEl.textContent = `Pen them! ${world.activeCount()} left`;
   }
@@ -247,20 +330,27 @@ function showBanner(text: string) {
 
 // --------------------------------------------------------------- screens
 
-function startLevel(id: number) {
+function startLevel(id: number, m: Mode = mode) {
   sfx.unlock();
+  mode = m;
   levelId = id;
-  world = makeWorld(id);
+  world = makeWorld(mode, id);
   world.setViewAspect(aspect);
+  pilot = makePilot();
   lastCount = -1;
   doneAt = 0;
   screen = 'playing';
   overlay.innerHTML = '';
   hud.classList.remove('hidden');
+  progressEl.classList.toggle('sun', mode === 'roundup');
+  hintEl.innerHTML =
+    mode === 'roundup'
+      ? 'Drag to move your dog.<br />Round up every sheep and pen them before sunset.'
+      : 'Drag to move your dog.<br />Sheep run away from him.';
   hintEl.classList.toggle('gone', id > 2);
-  window.setTimeout(() => hintEl.classList.add('gone'), 5000);
-  levelNameEl.textContent = `Level ${id} · ${world.level.name}`;
-  showBanner(`Level ${id}`);
+  window.setTimeout(() => hintEl.classList.add('gone'), 6000);
+  levelNameEl.textContent = `Level ${id} · ${levelName(world)}`;
+  showBanner(mode === 'roundup' ? `Round-up ${id}` : `Trail ${id}`);
   updateHud();
 }
 
@@ -271,7 +361,7 @@ function pause() {
     <div class="screen" style="justify-content:center">
       <div class="card" style="text-align:center">
         <h2>Paused</h2>
-        <p class="muted">${world.level.name}</p>
+        <p class="muted">${levelName(world)}</p>
         <div style="display:grid;gap:10px">
           <button class="btn primary" data-act="resume">Resume</button>
           <button class="btn" data-act="restart">Restart level</button>
@@ -288,6 +378,10 @@ function resume() {
 }
 
 function finishLevel() {
+  if (world instanceof Meadow) {
+    finishMeadow(world);
+    return;
+  }
   const targets = starTargets(world.level);
   const penned = world.penned;
   const stars = targets.filter((t) => penned >= t).length;
@@ -332,37 +426,88 @@ function finishLevel() {
   }
 }
 
+function finishMeadow(m: Meadow) {
+  const pct = m.penned / m.total;
+  const stars = MEADOW_STARS.filter((t) => pct >= t).length;
+  const bonus = m.allPenned ? Math.ceil(m.timeLeft()) : 0;
+  const wool = m.penned + stars * 10 + bonus;
+  save.wool += wool;
+  save.meadowStars[levelId] = Math.max(save.meadowStars[levelId] ?? 0, stars);
+  save.meadowBest[levelId] = Math.max(save.meadowBest[levelId] ?? 0, m.penned);
+  const unlockedNext = stars >= 1 && levelId + 1 > save.meadowUnlocked;
+  if (stars >= 1) save.meadowUnlocked = Math.max(save.meadowUnlocked, levelId + 1);
+  writeSave(save);
+
+  screen = 'results';
+  hud.classList.add('hidden');
+  const nextAt = MEADOW_STARS.map((t) => Math.ceil(t * m.total)).find((n) => m.penned < n);
+  const starHtml = [0, 1, 2]
+    .map((i) => (i < stars ? `<span class="on" style="animation-delay:${0.25 + i * 0.3}s">★</span>` : '★'))
+    .join('');
+  overlay.innerHTML = `
+    <div class="screen" style="justify-content:center">
+      <div class="card" style="text-align:center">
+        <p class="muted">Round-up ${levelId} · ${m.def.name}</p>
+        <div class="stars">${starHtml}</div>
+        <div class="big-number">${m.penned}<span style="font-size:28px;color:#8a9180">/${m.total}</span></div>
+        <p style="margin:4px 0 0;font-weight:800">sheep home</p>
+        <p class="muted">${m.allPenned ? `Every sheep, with ${Math.ceil(m.timeLeft())}s of daylight left!` : nextAt ? `${nextAt} for the next ★` : ''}</p>
+        <p><span class="wool">🧶 +${wool} wool</span></p>
+        ${bonus ? `<p class="muted">Includes +${bonus} sunset bonus</p>` : ''}
+        ${stars === 0 ? `<p class="muted">Pen at least ${Math.ceil(MEADOW_STARS[0] * m.total)} sheep to open the next meadow.</p>` : ''}
+        ${unlockedNext ? `<p style="font-weight:800;color:#3b8a22">New meadow unlocked!</p>` : ''}
+      </div>
+      <div class="row">
+        <button class="btn" data-act="retry">Retry</button>
+        <button class="btn green" data-act="dog">Dog 🐕</button>
+      </div>
+      <div class="row">
+        ${stars >= 1 ? `<button class="btn primary" data-act="next">Next meadow ▶</button>` : `<button class="btn primary" data-act="retry">Try again</button>`}
+      </div>
+      <button class="toggle" data-act="home">Home</button>
+    </div>`;
+  if (stars > 0) {
+    if (!m.allPenned) sfx.fanfare();
+    for (let i = 0; i < stars; i++) setTimeout(() => sfx.star(i), 250 + i * 300);
+  }
+}
+
 function showHome() {
   screen = 'home';
   hud.classList.add('hidden');
-  levelId = Math.min(levelId, save.unlocked);
-  world = makeWorld(save.unlocked);
+  const next = save.meadowUnlocked;
+  mode = 'roundup';
+  levelId = next;
+  world = makeWorld('roundup', next);
   world.setViewAspect(aspect);
-  const next = save.unlocked;
   const chips: string[] = [];
   for (let i = Math.max(1, next - 7); i <= next; i++) {
-    const s = save.stars[i] ?? 0;
+    const s = save.meadowStars[i] ?? 0;
     chips.push(
-      `<button class="level-chip ${i === next ? 'current' : ''}" data-act="play" data-level="${i}">${i}<small>${'★'.repeat(s) || '&nbsp;'}</small></button>`,
+      `<button class="level-chip ${i === next ? 'current' : ''}" data-act="play" data-mode="roundup" data-level="${i}">${i}<small>${'★'.repeat(s) || '&nbsp;'}</small></button>`,
     );
   }
   overlay.innerHTML = `
     <div class="screen">
       <div class="logo">
         <h1>Flock Rescue</h1>
-        <p>Herd the flock. Fill the pen.</p>
+        <p>Round them up. Bring them home.</p>
       </div>
       <div style="flex:1"></div>
       <span class="wool">🧶 ${save.wool} wool</span>
       <div class="card" style="text-align:center">
-        <p class="muted" style="margin:0">Level ${next}</p>
-        <h2>${getLevel(next).name}</h2>
-        <button class="btn primary" data-act="play" data-level="${next}">Herd! ▶</button>
+        <p class="muted" style="margin:0">Round-up ${next} <span class="mode-tag">NEW</span></p>
+        <h2>${getMeadow(next).name}</h2>
+        <button class="btn primary" data-act="play" data-mode="roundup" data-level="${next}">Herd! ▶</button>
       </div>
+      <div class="levels">${chips.join('')}</div>
       <div class="row">
         <button class="btn green" data-act="dog">Upgrade dog 🐕</button>
       </div>
-      <div class="levels">${chips.join('')}</div>
+      <div class="card small" style="text-align:center">
+        <p class="muted" style="margin:0 0 6px">Trail (classic) · level ${save.unlocked}</p>
+        <button class="btn" data-act="play" data-mode="trail" data-level="${save.unlocked}">Play the trail</button>
+      </div>
       <button class="toggle" data-act="sound">Sound: ${save.sound ? 'on' : 'off'}</button>
     </div>`;
 }
@@ -406,7 +551,7 @@ overlay.addEventListener('click', (e) => {
   sfx.click();
   switch (el.dataset.act) {
     case 'play':
-      startLevel(Number(el.dataset.level));
+      startLevel(Number(el.dataset.level), (el.dataset.mode as Mode) ?? 'roundup');
       break;
     case 'resume':
       resume();
@@ -456,11 +601,12 @@ overlay.addEventListener('click', (e) => {
   },
   startLevel,
   save,
-  setAutopilot(mode: 'good' | 'bad' | null) {
-    pilot = mode ? new Autopilot(mode === 'bad') : null;
+  setAutopilot(m: 'good' | 'bad' | null) {
+    autoMode = m;
+    pilot = makePilot();
   },
 };
 
-if (params.get('level')) startLevel(levelId);
+if (params.get('level')) startLevel(levelId, mode);
 else showHome();
 requestAnimationFrame(frame);
