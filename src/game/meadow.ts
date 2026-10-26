@@ -34,6 +34,8 @@ export class Meadow {
   readonly rng: Rng;
   readonly sheep: Sheep[] = [];
   readonly segments: Segment[];
+  /** What the dog bumps into: fences, stone walls and the field edge. He can swim the river. */
+  readonly dogSegments: Segment[];
   readonly obstacles: Obstacle[];
   readonly pen: PenBox;
   readonly dog: Dog;
@@ -70,7 +72,8 @@ export class Meadow {
     this.limit = def.seconds;
     this.obstacles = def.obstacles;
     this.pen = penBox(def);
-    this.segments = [...boundary(def), ...penWalls(this.pen), ...def.walls.map(([ax, ay, bx, by]) => ({ ax, ay, bx, by })), ...def.streams.flatMap(streamSegments)];
+    this.dogSegments = [...boundary(def), ...penWalls(this.pen), ...def.walls.map(([ax, ay, bx, by]) => ({ ax, ay, bx, by }))];
+    this.segments = [...this.dogSegments, ...def.streams.flatMap(streamSegments)];
 
     let id = 1;
     for (const g of def.groups) {
@@ -169,8 +172,7 @@ export class Meadow {
     const tx = this.viewLeft() + this.target.u * this.viewW;
     const ty = this.viewBottom() + (1 - this.target.v) * this.viewH;
     moveDog(d, tx, ty, this.stats, false, dt);
-    // The dog jumps walls and swims streams; it only bumps into rocks and the map edge.
-    collideCircle(d, FLOCK.dogRadius, [], this.obstacles);
+    collideCircle(d, FLOCK.dogRadius, this.dogSegments, this.obstacles);
     d.x = clamp(d.x, 0.6, this.def.width - 0.6);
     d.y = clamp(d.y, 0.6, this.def.height - 0.6);
   }
@@ -233,6 +235,13 @@ export class Meadow {
     this.camX += (fx - this.camX) * k;
     this.camY += (fy - this.camY) * k;
 
+    // The dog always stays comfortably on screen, so steering toward an edge
+    // carries the camera along instead of trapping the dog there.
+    const bandX = this.viewW * 0.26;
+    const bandY = this.viewH * 0.2;
+    this.camX = clamp(this.camX, this.dog.x - bandX, this.dog.x + bandX);
+    this.camY = clamp(this.camY, this.dog.y - bandY, this.dog.y + bandY);
+
     // Zoom out a little as the flock grows.
     const wantW = clamp(20 + Math.sqrt(this.gathered - this.penned + 1) * 0.8, 20, 30);
     this.viewW += (wantW - this.viewW) * Math.min(1, dt * 0.8);
@@ -243,9 +252,10 @@ export class Meadow {
   private clampCamera(): void {
     const w = this.def.width;
     const h = this.def.height;
-    const mx = 3;
+    // Enough room past the edges that the dog can always be kept near the middle.
+    const mx = this.viewW * 0.26;
     // Extra room past the top edge so the flock never hides under the score bar.
-    const top = 9;
+    const top = Math.max(9, this.viewH * 0.32);
     this.camX = w + 2 * mx <= this.viewW ? w / 2 : clamp(this.camX, this.viewW / 2 - mx, w - this.viewW / 2 + mx);
     this.camY = h + mx + top <= this.viewH ? h / 2 + top / 2 : clamp(this.camY, this.viewH / 2 - mx, h - this.viewH / 2 + top);
   }

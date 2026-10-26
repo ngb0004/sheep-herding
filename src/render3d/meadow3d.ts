@@ -23,6 +23,14 @@ export class Meadow3D {
   private world: THREE.Group | null = null;
   private terrain: THREE.Mesh | null = null;
   private sheepMesh: THREE.InstancedMesh | null = null;
+  /** Legs in diagonal pairs (front-left + back-right, and the other two), swung in opposite phase. */
+  private legsA: THREE.InstancedMesh | null = null;
+  private legsB: THREE.InstancedMesh | null = null;
+  private dogLegs: THREE.Object3D[] = [];
+  private dogStride = 0;
+  private lastT = 0;
+  private legLocal = new THREE.Matrix4();
+  private legWorld = new THREE.Matrix4();
   private dog: THREE.Group | null = null;
   private dogTail: THREE.Object3D | null = null;
   private def: MeadowDef | null = null;
@@ -160,31 +168,52 @@ export class Meadow3D {
 
   private updateSheep(m: Meadow, t: number): void {
     const mesh = this.sheepMesh!;
+    const legsA = this.legsA!;
+    const legsB = this.legsB!;
     const o = this.tmp;
     let n = 0;
     for (const s of m.sheep) {
       if (s.state === 'lost') continue;
       const speed = Math.hypot(s.vx, s.vy);
       const trot = Math.min(1, speed / 3);
-      const bob = Math.abs(Math.sin(s.phase * 3)) * (0.04 + 0.14 * trot);
+      // s.phase advances faster the faster the sheep moves, so stride follows speed.
+      const stride = s.phase * 3;
+      const bob = Math.abs(Math.sin(stride)) * 0.12 * trot;
       o.position.set(s.x, this.heights(s.x, s.y) + bob, -s.y);
-      o.rotation.set(0, s.heading, Math.sin(s.phase * 3) * 0.08 * trot);
+      o.rotation.set(0, s.heading, Math.sin(stride) * 0.05 * trot);
       const k = s.lamb ? 0.68 : 1;
       o.scale.set(k, k, k);
       o.updateMatrix();
-      mesh.setMatrixAt(n++, o.matrix);
+      mesh.setMatrixAt(n, o.matrix);
+      // Legs pivot at the hip; a grazing sheep's legs barely move.
+      const swing = Math.sin(stride) * (0.08 + 0.55 * trot);
+      this.legLocal.makeRotationZ(swing).setPosition(0, SHEEP_HIP, 0);
+      legsA.setMatrixAt(n, this.legWorld.multiplyMatrices(o.matrix, this.legLocal));
+      this.legLocal.makeRotationZ(-swing).setPosition(0, SHEEP_HIP, 0);
+      legsB.setMatrixAt(n, this.legWorld.multiplyMatrices(o.matrix, this.legLocal));
+      n++;
     }
-    mesh.count = n;
-    mesh.instanceMatrix.needsUpdate = true;
+    for (const im of [mesh, legsA, legsB]) {
+      im.count = n;
+      im.instanceMatrix.needsUpdate = true;
+    }
     void t;
   }
 
   private updateDog(m: Meadow, t: number): void {
     const d = m.dog;
     const dog = this.dog!;
-    const run = Math.min(1, Math.hypot(d.vx, d.vy) / 4);
-    dog.position.set(d.x, this.heights(d.x, d.y) + Math.abs(Math.sin(t * 14)) * 0.12 * run, -d.y);
-    dog.rotation.set(0, d.heading, 0);
+    const speed = Math.hypot(d.vx, d.vy);
+    const run = Math.min(1, speed / 4);
+    const dt = Math.min(0.1, Math.max(0, t - this.lastT));
+    this.lastT = t;
+    this.dogStride += dt * (2 + speed * 2.6);
+    const st = this.dogStride;
+    dog.position.set(d.x, this.heights(d.x, d.y) + Math.abs(Math.sin(st)) * 0.14 * run, -d.y);
+    dog.rotation.set(0, d.heading, Math.sin(st) * 0.04 * run);
+    // Gallop-ish: diagonal pairs swing in opposite phase.
+    const swing = Math.sin(st) * (0.1 + 0.75 * run);
+    this.dogLegs.forEach((leg, i) => (leg.rotation.z = i === 0 || i === 3 ? swing : -swing));
     if (this.dogTail) this.dogTail.rotation.y = Math.sin(t * (6 + run * 10)) * 0.6;
   }
 
@@ -240,17 +269,24 @@ export class Meadow3D {
     this.buildPen(m, g, flat);
     this.buildScenery(def, g, flat);
 
-    // Sheep: one instanced low-poly model.
-    const sheepGeo = sheepGeometry();
-    this.sheepMesh = new THREE.InstancedMesh(sheepGeo, flat, Math.max(1, m.sheep.length));
-    this.sheepMesh.castShadow = true;
-    this.sheepMesh.receiveShadow = true;
-    this.sheepMesh.frustumCulled = false;
-    g.add(this.sheepMesh);
+    // Sheep: an instanced low-poly body plus two instanced pairs of legs.
+    const geos = sheepGeometry();
+    const inst = (geo: THREE.BufferGeometry) => {
+      const im = new THREE.InstancedMesh(geo, flat, Math.max(1, m.sheep.length));
+      im.castShadow = true;
+      im.receiveShadow = true;
+      im.frustumCulled = false;
+      g.add(im);
+      return im;
+    };
+    this.sheepMesh = inst(geos.body);
+    this.legsA = inst(geos.legsA);
+    this.legsB = inst(geos.legsB);
 
-    const { dog, tail } = dogModel(flat);
+    const { dog, tail, legs } = dogModel(flat);
     this.dog = dog;
     this.dogTail = tail;
+    this.dogLegs = legs;
     g.add(dog);
   }
 
@@ -521,16 +557,21 @@ function colored(geo: THREE.BufferGeometry, color: THREE.Color): THREE.BufferGeo
   return g;
 }
 
-/** Chunky low-poly sheep facing +x (matches the sim's heading 0), feet at y = 0. */
-function sheepGeometry(): THREE.BufferGeometry {
+const SHEEP_HIP = 0.42;
+
+/**
+ * Chunky low-poly sheep facing +x (matches the sim's heading 0), feet at y = 0.
+ * Legs come separately, in diagonal pairs, with their pivot (the hip) at the origin.
+ */
+function sheepGeometry(): { body: THREE.BufferGeometry; legsA: THREE.BufferGeometry; legsB: THREE.BufferGeometry } {
   const wool = new THREE.Color(0xf3efe4);
   const woolHi = new THREE.Color(0xfffcf4);
   const face = new THREE.Color(0x2a2522);
   const parts: THREE.BufferGeometry[] = [];
-  const body = new THREE.IcosahedronGeometry(0.45, 1);
-  body.scale(1.3, 0.95, 1.0);
-  body.translate(0, 0.66, 0);
-  parts.push(colored(body, wool));
+  const torso = new THREE.IcosahedronGeometry(0.45, 1);
+  torso.scale(1.3, 0.95, 1.0);
+  torso.translate(0, 0.66, 0);
+  parts.push(colored(torso, wool));
   for (const [x, y, z, r] of [
     [0.2, 1.02, 0.14, 0.2],
     [-0.22, 1.0, -0.12, 0.22],
@@ -552,19 +593,25 @@ function sheepGeometry(): THREE.BufferGeometry {
     ear.translate(0.55, 0.86, z * 1.25);
     parts.push(colored(ear, face));
   }
-  for (const [x, z] of [[0.28, 0.17], [0.28, -0.17], [-0.28, 0.17], [-0.28, -0.17]]) {
-    const leg = new THREE.BoxGeometry(0.1, 0.42, 0.1);
-    leg.translate(x, 0.21, z);
-    parts.push(colored(leg, face));
-  }
+  const pair = (legs: [number, number][]) => {
+    const g = mergeGeometries(
+      legs.map(([x, z]) => colored(new THREE.BoxGeometry(0.1, SHEEP_HIP + 0.04, 0.1).translate(x, -SHEEP_HIP / 2, z), face)),
+    );
+    g.computeVertexNormals();
+    return g;
+  };
   // The sim's heading is measured from +x toward +y (up the field), which is -z here.
-  const merged = mergeGeometries(parts);
-  merged.computeVertexNormals();
-  return merged;
+  const body = mergeGeometries(parts);
+  body.computeVertexNormals();
+  return {
+    body,
+    legsA: pair([[0.28, 0.17], [-0.28, -0.17]]),
+    legsB: pair([[0.28, -0.17], [-0.28, 0.17]]),
+  };
 }
 
 /** Border collie, facing +x. */
-function dogModel(mat: THREE.Material): { dog: THREE.Group; tail: THREE.Object3D } {
+function dogModel(mat: THREE.Material): { dog: THREE.Group; tail: THREE.Object3D; legs: THREE.Object3D[] } {
   const black = new THREE.Color(0x1d1d22);
   const white = new THREE.Color(0xf1f1f1);
   const parts: THREE.BufferGeometry[] = [];
@@ -580,9 +627,6 @@ function dogModel(mat: THREE.Material): { dog: THREE.Group; tail: THREE.Object3D
   box(0.06, 0.06, 0.06, 0.84, 0.76, 0, black); // nose
   box(0.08, 0.16, 0.08, 0.5, 0.98, 0.09, black); // ears
   box(0.08, 0.16, 0.08, 0.5, 0.98, -0.09, black);
-  for (const [x, z] of [[0.3, 0.11], [0.3, -0.11], [-0.28, 0.11], [-0.28, -0.11]]) {
-    box(0.09, 0.4, 0.09, x, 0.2, z, white);
-  }
   const body = new THREE.Mesh(mergeGeometries(parts), mat);
   body.castShadow = true;
   const tailGeo = colored(new THREE.BoxGeometry(0.45, 0.09, 0.09).translate(-0.22, 0, 0), black);
@@ -592,8 +636,18 @@ function dogModel(mat: THREE.Material): { dog: THREE.Group; tail: THREE.Object3D
   tail.castShadow = true;
   const dog = new THREE.Group();
   dog.add(body, tail);
+  // Legs pivot at the hip so they can swing. Order: front-left, front-right, back-left, back-right.
+  const legs: THREE.Object3D[] = [];
+  const legGeo = colored(new THREE.BoxGeometry(0.09, 0.44, 0.09).translate(0, -0.2, 0), white);
+  for (const [x, z] of [[0.3, 0.11], [0.3, -0.11], [-0.28, 0.11], [-0.28, -0.11]]) {
+    const leg = new THREE.Mesh(legGeo, mat);
+    leg.position.set(x, 0.42, z);
+    leg.castShadow = true;
+    dog.add(leg);
+    legs.push(leg);
+  }
   dog.scale.setScalar(1.25);
-  return { dog, tail };
+  return { dog, tail, legs };
 }
 
 // -------------------------------------------------------------- terrain

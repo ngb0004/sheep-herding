@@ -201,8 +201,25 @@ export class MeadowPilot {
     // Stand close behind the subject so it keeps moving at a good trot.
     const size = subject === c ? spread : 0.8;
     const stand = presence * 0.3 + size;
-    const tx = subject.x - dx * stand;
-    const ty = subject.y - dy * stand;
+    let tx = subject.x - dx * stand;
+    let ty = subject.y - dy * stand;
+    // Outrun: if the dog is on the wrong side, swing wide round the flock
+    // instead of charging through it (and pushing it the wrong way).
+    const ox = m.dog.x - subject.x;
+    const oy = m.dog.y - subject.y;
+    const od = Math.hypot(ox, oy) || 1;
+    if ((ox * dx + oy * dy) / od > -0.5 && od < stand + presence * 2.5) {
+      // Orbit just outside the flock's comfort zone, stepping round toward the back.
+      const behind = Math.atan2(-dy, -dx);
+      let a = Math.atan2(oy, ox);
+      let diff = behind - a;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      a += Math.sign(diff) * Math.min(Math.abs(diff), 0.9);
+      const r = size + presence * 1.05;
+      tx = subject.x + Math.cos(a) * r;
+      ty = subject.y + Math.sin(a) * r;
+    }
     m.target = {
       u: (tx - m.viewLeft()) / m.viewW,
       v: 1 - (ty - m.viewBottom()) / m.viewH,
