@@ -14,6 +14,8 @@ export interface SaveData {
   meadowBest: Record<number, number>;
   dog: DogLevels;
   sound: boolean;
+  /** Round-up graphics: stylized 3D or the original 2D. */
+  gfx: '3d' | '2d';
 }
 
 const KEY = 'flock-rescue.save.v1';
@@ -22,7 +24,7 @@ export function freshSave(): SaveData {
   return {
     version: 1, wool: 0, unlocked: 1, stars: {}, best: {},
     meadowUnlocked: 1, meadowStars: {}, meadowBest: {},
-    dog: { ...DEFAULT_LEVELS }, sound: true,
+    dog: { ...DEFAULT_LEVELS }, sound: true, gfx: '3d',
   };
 }
 

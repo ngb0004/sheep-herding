@@ -41,3 +41,18 @@ export function segmentT(px: number, py: number, ax: number, ay: number, bx: num
   if (len2 === 0) return 0;
   return clamp(((px - ax) * dx + (py - ay) * dy) / len2, 0, 1);
 }
+
+/** Smooth value noise in [0, 1). */
+export function smoothNoise(x: number, y: number, seed: number): number {
+  const xi = Math.floor(x);
+  const yi = Math.floor(y);
+  const fx = x - xi;
+  const fy = y - yi;
+  const u = fx * fx * (3 - 2 * fx);
+  const v = fy * fy * (3 - 2 * fy);
+  const a = hash2(xi, yi, seed);
+  const b = hash2(xi + 1, yi, seed);
+  const c = hash2(xi, yi + 1, seed);
+  const d = hash2(xi + 1, yi + 1, seed);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}

@@ -14,6 +14,11 @@ bridge, and the pen's gate can face any way. Arrows at the screen edge point to
 the pen and to the nearest sheep still out grazing. Pen every sheep early for
 a sunset bonus.
 
+Round-up draws in stylized low-poly 3D (three.js): rolling hills, hedgerows,
+stone walls, a river with a plank bridge, and sunlight that slides from
+afternoon to golden hour to dusk as the timer runs out. The original 2D look is
+one tap away on the home screen ("Graphics: 3D/2D"), or `?gfx=2d`.
+
 ## Trail (classic)
 
 The original scrolling run: drive the flock up a corridor over ×2/×3 clover,
@@ -36,7 +41,8 @@ Desktop: mouse to steer, Space to bark, Esc to pause.
 ```
 src/game/      Pure simulation (no DOM): flock.ts (shared flocking), meadow.ts (round-up),
                world.ts (trail), levels, dog stats, autopilots for balance tests
-src/render/    Canvas renderer and procedurally drawn sprites
+src/render/    2D canvas renderer (trail mode, 2D round-up, and the HUD overlay over 3D)
+src/render3d/  three.js renderer for round-up: low-poly models built in code, lighting
 src/main.ts    Screens, input, HUD, upgrades, save
 src/audio.ts   Synthesized sounds (no audio files)
 ```

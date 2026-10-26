@@ -6,6 +6,7 @@ import { Meadow } from './game/meadow';
 import { getMeadow } from './game/meadowLevels';
 import { World } from './game/world';
 import { Renderer } from './render/renderer';
+import { Meadow3D } from './render3d/meadow3d';
 import { SaveData, loadSave, writeSave } from './save';
 
 type Screen = 'home' | 'playing' | 'paused' | 'results' | 'upgrades';
@@ -18,6 +19,7 @@ const MEADOW_STARS = [0.5, 0.75, 0.95];
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const stage = $('stage');
 const canvas = $<HTMLCanvasElement>('game');
+const canvas3d = $<HTMLCanvasElement>('game3d');
 const overlay = $('overlay');
 const hud = $('hud');
 const countEl = $('count');
@@ -44,6 +46,27 @@ let acc = 0;
 let pointerActive = false;
 let barkWasReady = true;
 const keys = new Set<string>();
+let cssW = 0;
+let cssH = 0;
+// Round-up can draw in stylized 3D (default) or the original 2D (?gfx=2d to force).
+let gfx3d = params.get('gfx') ? params.get('gfx') !== '2d' : save.gfx !== '2d';
+let view3d: Meadow3D | null = null;
+/** Last pointer position in canvas CSS px (already lifted for touch), for 3D picking. */
+let pointer: { x: number; y: number; mouse: boolean } | null = null;
+
+function use3d(): boolean {
+  if (!gfx3d || !(world instanceof Meadow)) return false;
+  if (!view3d) {
+    try {
+      view3d = new Meadow3D(canvas3d);
+      view3d.resize(cssW, cssH, window.devicePixelRatio || 1);
+    } catch {
+      gfx3d = false; // no WebGL: fall back to 2D
+      return false;
+    }
+  }
+  return true;
+}
 // ?auto=good|bad lets the autopilot herd (for testing and recording ad clips).
 let autoMode = params.get('auto');
 let pilot: Autopilot | MeadowPilot | null = null;
@@ -70,6 +93,9 @@ function layout() {
   stage.style.left = Math.round((vw - w) / 2) + 'px';
   stage.style.top = '0px';
   aspect = renderer.resize(w, h);
+  cssW = w;
+  cssH = h;
+  view3d?.resize(w, h, window.devicePixelRatio || 1);
   world.setViewAspect(aspect);
 }
 
@@ -92,6 +118,11 @@ function setTarget(e: PointerEvent) {
   const r = canvas.getBoundingClientRect();
   // Lift the target above a fingertip so the dog isn't hidden under it.
   const lift = e.pointerType === 'touch' ? 50 : 0;
+  pointer = { x: e.clientX - r.left, y: e.clientY - r.top - lift, mouse: e.pointerType === 'mouse' };
+  if (use3d()) {
+    if (screen === 'playing') hintEl.classList.add('gone');
+    return; // picked through the 3D camera each frame
+  }
   world.target = {
     u: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)),
     v: Math.min(0.98, Math.max(0.02, (e.clientY - r.top - lift) / r.height)),
@@ -167,6 +198,7 @@ function frame(now: number) {
 
   if (screen === 'playing') {
     keyboardSteer(dt);
+    pick3d();
     acc += dt;
     let steps = 0;
     while (acc >= 1 / 60 && steps < 4) {
@@ -186,8 +218,27 @@ function frame(now: number) {
     acc = 0;
   }
   const rdt = screen === 'playing' ? dt : 0;
-  if (world instanceof Meadow) renderer.renderMeadow(world, rdt, now / 1000);
-  else renderer.render(world, rdt, now / 1000);
+  const three = use3d();
+  canvas3d.classList.toggle('hidden', !three);
+  if (three && world instanceof Meadow) {
+    view3d!.render(world, now / 1000);
+    renderer.drawMeadowOverlay(world, view3d!.project, world.viewW, rdt, now / 1000);
+  } else if (world instanceof Meadow) {
+    renderer.renderMeadow(world, rdt, now / 1000);
+  } else {
+    renderer.render(world, rdt, now / 1000);
+  }
+}
+
+/** In 3D, turn the finger's screen position into a sim target through the camera. */
+function pick3d() {
+  if (!pointer || !(pointerActive || pointer.mouse) || !use3d() || !(world instanceof Meadow)) return;
+  const pt = view3d!.pick(pointer.x, pointer.y);
+  if (!pt) return;
+  world.target = {
+    u: (pt.x - world.viewLeft()) / world.viewW,
+    v: 1 - (pt.y - world.viewBottom()) / world.viewH,
+  };
 }
 
 function handleEvents() {
@@ -508,7 +559,10 @@ function showHome() {
         <p class="muted" style="margin:0 0 6px">Trail (classic) · level ${save.unlocked}</p>
         <button class="btn" data-act="play" data-mode="trail" data-level="${save.unlocked}">Play the trail</button>
       </div>
-      <button class="toggle" data-act="sound">Sound: ${save.sound ? 'on' : 'off'}</button>
+      <div class="row" style="justify-content:center">
+        <button class="toggle" data-act="sound">Sound: ${save.sound ? 'on' : 'off'}</button>
+        <button class="toggle" data-act="gfx">Graphics: ${gfx3d ? '3D' : '2D'}</button>
+      </div>
     </div>`;
 }
 
@@ -582,6 +636,12 @@ overlay.addEventListener('click', (e) => {
       showUpgrades();
       break;
     }
+    case 'gfx':
+      gfx3d = !gfx3d;
+      save.gfx = gfx3d ? '3d' : '2d';
+      writeSave(save);
+      showHome();
+      break;
     case 'sound':
       save.sound = !save.sound;
       sfx.enabled = save.sound;

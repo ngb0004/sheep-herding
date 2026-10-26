@@ -2,7 +2,7 @@ import { DogStats } from '../game/dog';
 import { Dog, Obstacle, Sheep } from '../game/flock';
 import { Meadow, streamYAt } from '../game/meadow';
 import { Patch, World } from '../game/world';
-import { clamp, hash2 } from '../game/math';
+import { clamp, hash2, smoothNoise } from '../game/math';
 
 /** What drawAnimals needs; both game modes provide it. */
 interface AnimalScene {
@@ -80,7 +80,7 @@ export class Renderer {
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
-    this.ctx = canvas.getContext('2d', { alpha: false })!;
+    this.ctx = canvas.getContext('2d')!;
   }
 
   /** Returns the view aspect (height / width) for the world. */
@@ -155,7 +155,7 @@ export class Renderer {
     const bounds = { left, right: left + world.viewW, bottom: world.camY, top };
     this.drawObstacles(world.level.obstacles, bounds, sx, sy);
     this.drawAnimals(world, bounds, sx, sy, t);
-    this.drawEffects(dt, sx, sy);
+    this.drawEffects(dt, (x, y) => [sx(x), sy(y)]);
     this.drawPatchLabels(world, sx, sy, t);
 
     // Morning mist over the hill crest.
@@ -199,9 +199,9 @@ export class Renderer {
     this.drawMeadowWalls(m, b, sx, sy);
     this.drawObstacles(m.obstacles, b, sx, sy);
     this.drawAnimals(m, b, sx, sy, t);
-    this.drawEffects(dt, sx, sy);
+    this.drawEffects(dt, (x, y) => [sx(x), sy(y)]);
     this.drawSunset(m);
-    this.drawPointers(m, sx, sy, t);
+    this.drawPointers(m, (x, y) => [sx(x), sy(y)], t);
   }
 
   private drawMeadowGround(m: Meadow, b: Bounds, sx: (x: number) => number, sy: (y: number) => number) {
@@ -439,10 +439,35 @@ export class Renderer {
     ctx.fillRect(0, 0, this.w, this.h);
   }
 
+  /**
+   * 2D layer over the 3D meadow: floating text, bursts, bark rings and edge
+   * arrows, placed through the 3D camera. `project` returns CSS pixels.
+   */
+  drawMeadowOverlay(m: Meadow, project: (x: number, y: number) => [number, number], viewW: number, dt: number, t: number) {
+    const ctx = this.ctx;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, this.w, this.h);
+    this.k = this.w / viewW;
+    const dpr = this.dpr;
+    const proj = (x: number, y: number): [number, number] => {
+      const [px, py] = project(x, y);
+      return [px * dpr, py * dpr];
+    };
+    this.drawEffects(dt, proj);
+    // Gentle vignette, darker at dusk.
+    const dusk = smoothstep(0.8, 1, m.time / m.limit);
+    const v = ctx.createRadialGradient(this.w / 2, this.h / 2, this.h * 0.4, this.w / 2, this.h / 2, this.h * 0.85);
+    v.addColorStop(0, 'rgba(0,0,0,0)');
+    v.addColorStop(1, `rgba(0,15,10,${(0.18 + dusk * 0.2).toFixed(3)})`);
+    ctx.fillStyle = v;
+    ctx.fillRect(0, 0, this.w, this.h);
+    this.drawPointers(m, proj, t);
+  }
+
   /** Edge-of-screen arrows to the pen and to the nearest sheep still out grazing. */
-  private drawPointers(m: Meadow, sx: (x: number) => number, sy: (y: number) => number, t: number) {
+  private drawPointers(m: Meadow, proj: (x: number, y: number) => [number, number], t: number) {
     const p = m.pen;
-    this.pointer(sx((p.left + p.right) / 2), sy((p.bottom + p.top) / 2), '🏠', '#ffe7a8', t);
+    this.pointer(...proj((p.left + p.right) / 2, (p.bottom + p.top) / 2), '🏠', '#ffe7a8', t);
 
     let best: Sheep | null = null;
     let bestD = Infinity;
@@ -457,7 +482,7 @@ export class Renderer {
     if (best) {
       let n = 0;
       for (const s of m.sheep) if (s.state === 'active' && !s.gathered && Math.hypot(s.x - best.x, s.y - best.y) < 8) n++;
-      this.pointer(sx(best.x), sy(best.y), '🐑' + n, '#ffffff', t);
+      this.pointer(...proj(best.x, best.y), '🐑' + n, '#ffffff', t);
     }
   }
 
@@ -858,7 +883,7 @@ export class Renderer {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
   }
 
-  private drawEffects(dt: number, sx: (x: number) => number, sy: (y: number) => number) {
+  private drawEffects(dt: number, proj: (x: number, y: number) => [number, number]) {
     const ctx = this.ctx;
     const k = this.k;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -870,7 +895,8 @@ export class Renderer {
       ctx.strokeStyle = r.color;
       ctx.lineWidth = 0.25 * k * (1 - p) + 1;
       ctx.beginPath();
-      ctx.arc(sx(r.x), sy(r.y), r.r * k * (0.3 + 0.7 * p), 0, Math.PI * 2);
+      const [rx, ry] = proj(r.x, r.y);
+      ctx.arc(rx, ry, r.r * k * (0.3 + 0.7 * p), 0, Math.PI * 2);
       ctx.stroke();
     }
 
@@ -882,7 +908,8 @@ export class Renderer {
       p.vy *= 0.92;
       ctx.globalAlpha = 1 - p.life / p.max;
       ctx.fillStyle = p.color;
-      dot(ctx, sx(p.x), sy(p.y), p.size * k);
+      const [px, py] = proj(p.x, p.y);
+      dot(ctx, px, py, p.size * k);
     }
 
     this.texts = this.texts.filter((f) => (f.life += dt) < f.max);
@@ -892,12 +919,13 @@ export class Renderer {
       const p = f.life / f.max;
       ctx.globalAlpha = p > 0.7 ? 1 - (p - 0.7) / 0.3 : 1;
       ctx.font = `900 ${f.size * k}px ${UI_FONT}`;
-      const y = sy(f.y + p * 1.5);
+      const [fx, fy] = proj(f.x, f.y);
+      const y = fy - p * 1.5 * k;
       ctx.lineWidth = 0.2 * k;
       ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-      ctx.strokeText(f.text, sx(f.x), y);
+      ctx.strokeText(f.text, fx, y);
       ctx.fillStyle = f.color;
-      ctx.fillText(f.text, sx(f.x), y);
+      ctx.fillText(f.text, fx, y);
     }
     ctx.globalAlpha = 1;
   }
@@ -941,21 +969,6 @@ export function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w
 function smoothstep(a: number, b: number, x: number): number {
   const t = clamp((x - a) / (b - a), 0, 1);
   return t * t * (3 - 2 * t);
-}
-
-/** Smooth value noise in [0, 1). */
-function smoothNoise(x: number, y: number, seed: number): number {
-  const xi = Math.floor(x);
-  const yi = Math.floor(y);
-  const fx = x - xi;
-  const fy = y - yi;
-  const u = fx * fx * (3 - 2 * fx);
-  const v = fy * fy * (3 - 2 * fy);
-  const a = hash2(xi, yi, seed);
-  const b = hash2(xi + 1, yi, seed);
-  const c = hash2(xi, yi + 1, seed);
-  const d = hash2(xi + 1, yi + 1, seed);
-  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
 }
 
 function hslToRgb(h: number, s: number, l: number): [number, number, number] {

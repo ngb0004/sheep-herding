@@ -41,9 +41,17 @@ button {
   box-shadow: 0 0 40px rgba(0, 0, 0, 0.5);
 }
 
-#game {
+#game,
+#game3d {
+  position: absolute;
+  top: 0;
+  left: 0;
   display: block;
   touch-action: none;
+}
+
+#game3d {
+  pointer-events: none;
 }
 
 .hidden {
