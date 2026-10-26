@@ -21,6 +21,13 @@ export interface PenBox {
   gateB: number;
   outsideX: number;
   outsideY: number;
+  /** Funnel fences from the gate posts, flaring outward. */
+  wings: Segment[];
+  /** Outward unit normal of the gate wall, and the middle of the gate opening. */
+  nx: number;
+  ny: number;
+  gateX: number;
+  gateY: number;
 }
 
 /**
@@ -140,6 +147,7 @@ export class Meadow {
       flockX: this.center.x,
       flockY: this.center.y,
       flockN: this.center.n,
+      extra: this.penDraw,
     }, dt);
     this.updateGathering();
     this.updatePen(dt);
@@ -155,6 +163,28 @@ export class Meadow {
       this.events.push({ type: 'done', allPenned: this.allPenned });
     }
   }
+
+  /**
+   * Sheep follow their leaders: a gathered sheep near the open gate drifts in on its own,
+   * more readily once others are already inside. Early meadows lean on this a lot.
+   */
+  private penDraw = (s: Sheep, acc: { x: number; y: number }): void => {
+    const draw = this.def.pen.draw ?? 0;
+    if (!draw || !s.gathered || s.state !== 'active') return;
+    const p = this.pen;
+    const dx = s.x - p.gateX;
+    const dy = s.y - p.gateY;
+    const d = Math.hypot(dx, dy);
+    const reach = 9 + (this.def.pen.wings ?? 0);
+    // Only from the gate side, so sheep behind the pen don't press into its back wall.
+    if (d > reach || dx * p.nx + dy * p.ny < -0.5) return;
+    const ix = p.gateX - p.nx * 2.5 - s.x;
+    const iy = p.gateY - p.ny * 2.5 - s.y;
+    const il = Math.hypot(ix, iy) || 1;
+    const k = draw * (2.2 + 2.2 * Math.min(1, this.penned / 4)) * Math.sqrt(1 - d / reach);
+    acc.x += (ix / il) * k;
+    acc.y += (iy / il) * k;
+  };
 
   private updateCenter(): void {
     let x = 0, y = 0, n = 0;
@@ -273,14 +303,36 @@ export function penBox(def: MeadowDef): PenBox {
   const mid = horizontal ? (left + right) / 2 : (bottom + top) / 2;
   const gateA = mid - p.gateW / 2;
   const gateB = mid + p.gateW / 2;
-  const out = 5;
+  // Far enough out to clear the funnel wings.
+  const out = 5 + (p.wings ?? 0) * Math.cos(0.6);
   let outsideX = (left + right) / 2;
   let outsideY = (bottom + top) / 2;
   if (p.gate === 'south') outsideY = bottom - out;
   if (p.gate === 'north') outsideY = top + out;
   if (p.gate === 'west') outsideX = left - out;
   if (p.gate === 'east') outsideX = right + out;
-  return { left, right, bottom, top, gate: p.gate, gateA, gateB, outsideX, outsideY };
+  const nx = p.gate === 'east' ? 1 : p.gate === 'west' ? -1 : 0;
+  const ny = p.gate === 'north' ? 1 : p.gate === 'south' ? -1 : 0;
+  const gateX = horizontal ? mid : p.gate === 'east' ? right : left;
+  const gateY = horizontal ? (p.gate === 'north' ? top : bottom) : mid;
+  // Posts sit at gateA/gateB along the wall; each wing leans out and away from the opening.
+  const wings: Segment[] = [];
+  const L = p.wings ?? 0;
+  if (L > 0) {
+    const flare = 0.6;
+    const tx = horizontal ? 1 : 0;
+    const ty = horizontal ? 0 : 1;
+    for (const [g, sgn] of [[gateA, -1], [gateB, 1]] as const) {
+      const ax = horizontal ? g : gateX;
+      const ay = horizontal ? gateY : g;
+      wings.push({
+        ax, ay,
+        bx: ax + nx * L * Math.cos(flare) + tx * sgn * L * Math.sin(flare),
+        by: ay + ny * L * Math.cos(flare) + ty * sgn * L * Math.sin(flare),
+      });
+    }
+  }
+  return { left, right, bottom, top, gate: p.gate, gateA, gateB, outsideX, outsideY, wings, nx, ny, gateX, gateY };
 }
 
 function penWalls(p: PenBox): Segment[] {
@@ -300,6 +352,7 @@ function penWalls(p: PenBox): Segment[] {
   side('north', p.left, p.top, p.right, p.top);
   side('west', p.left, p.bottom, p.left, p.top);
   side('east', p.right, p.bottom, p.right, p.top);
+  segs.push(...p.wings);
   return segs;
 }
 

@@ -404,6 +404,7 @@ export class Renderer {
         dot(ctx, sx(ax), sy(p.gateB), 0.32 * k);
       }
     }
+    for (const w of p.wings) this.fence(sx(w.ax), sy(w.ay), sx(w.bx), sy(w.by));
     // Count sign.
     const cx = sx((p.left + p.right) / 2);
     const cy = sy(p.top - 1.4);
@@ -464,26 +465,85 @@ export class Renderer {
     this.drawPointers(m, proj, t);
   }
 
-  /** Edge-of-screen arrows to the pen and to the nearest sheep still out grazing. */
+  /** Edge-of-screen arrows to the pen and to every group still out grazing, plus the minimap. */
   private drawPointers(m: Meadow, proj: (x: number, y: number) => [number, number], t: number) {
     const p = m.pen;
     this.pointer(...proj((p.left + p.right) / 2, (p.bottom + p.top) / 2), '🏠', '#ffe7a8', t);
+    for (const g of strayGroups(m)) this.pointer(...proj(g.x, g.y), '🐑' + g.n, '#ffffff', t);
+    this.drawMinimap(m, t);
+  }
 
-    let best: Sheep | null = null;
-    let bestD = Infinity;
-    for (const s of m.sheep) {
-      if (s.state !== 'active' || s.gathered) continue;
-      const d = Math.hypot(s.x - m.dog.x, s.y - m.dog.y);
-      if (d < bestD) {
-        bestD = d;
-        best = s;
+  /** The whole field in the bottom-left corner: where the flock, strays, pen and dog are. */
+  private drawMinimap(m: Meadow, t: number) {
+    const ctx = this.ctx;
+    const d = this.dpr;
+    const W = m.def.width;
+    const H = m.def.height;
+    const k = Math.min((78 * d) / W, (104 * d) / H);
+    const pad = 5 * d;
+    const x0 = 12 * d;
+    const y1 = this.h - Math.max(16 * d, 18 * d);
+    const y0 = y1 - H * k;
+    const mx = (x: number) => x0 + x * k;
+    const my = (y: number) => y1 - y * k;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = 'rgba(20,40,15,0.55)';
+    roundRect(ctx, x0 - pad, y0 - pad, W * k + pad * 2, H * k + pad * 2, 8 * d);
+    ctx.fill();
+    ctx.fillStyle = 'rgba(120,180,80,0.85)';
+    ctx.fillRect(x0, y0, W * k, H * k);
+
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#5aa9d6';
+    ctx.lineWidth = Math.max(2 * d, 3 * k);
+    for (const st of m.def.streams) {
+      ctx.beginPath();
+      st.points.forEach(([x, y], i) => (i ? ctx.lineTo(mx(x), my(y)) : ctx.moveTo(mx(x), my(y))));
+      ctx.stroke();
+      ctx.strokeStyle = '#a07a4a';
+      for (const b of st.bridges) {
+        const by = streamYAt(st, b.x);
+        ctx.beginPath();
+        ctx.moveTo(mx(b.x - b.w / 2), my(by));
+        ctx.lineTo(mx(b.x + b.w / 2), my(by));
+        ctx.stroke();
       }
+      ctx.strokeStyle = '#5aa9d6';
     }
-    if (best) {
-      let n = 0;
-      for (const s of m.sheep) if (s.state === 'active' && !s.gathered && Math.hypot(s.x - best.x, s.y - best.y) < 8) n++;
-      this.pointer(...proj(best.x, best.y), '🐑' + n, '#ffffff', t);
+    ctx.strokeStyle = '#8f8a7e';
+    ctx.lineWidth = 2 * d;
+    for (const [ax, ay, bx, by] of m.def.walls) {
+      ctx.beginPath();
+      ctx.moveTo(mx(ax), my(ay));
+      ctx.lineTo(mx(bx), my(by));
+      ctx.stroke();
     }
+
+    const p = m.pen;
+    ctx.fillStyle = '#e8cf86';
+    ctx.fillRect(mx(p.left), my(p.top), (p.right - p.left) * k, (p.top - p.bottom) * k);
+
+    // What's on screen right now.
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+    ctx.lineWidth = 1 * d;
+    const vl = clamp(m.viewLeft(), 0, W);
+    const vr = clamp(m.viewLeft() + m.viewW, 0, W);
+    const vb = clamp(m.viewBottom(), 0, H);
+    const vt = clamp(m.viewBottom() + m.viewH, 0, H);
+    ctx.strokeRect(mx(vl), my(vt), (vr - vl) * k, (vt - vb) * k);
+
+    const blink = 0.55 + 0.45 * Math.sin(t * 6);
+    for (const s of m.sheep) {
+      if (s.state === 'lost') continue;
+      const stray = s.state === 'active' && !s.gathered;
+      ctx.fillStyle = stray ? `rgba(255,236,120,${blink.toFixed(2)})` : '#ffffff';
+      const r = (stray ? 1.7 : 1.3) * d;
+      ctx.fillRect(mx(s.x) - r, my(s.y) - r, r * 2, r * 2);
+    }
+    ctx.fillStyle = '#2a1a10';
+    dot(ctx, mx(m.dog.x), my(m.dog.y), 2.6 * d);
+    ctx.fillStyle = '#ff8a3d';
+    dot(ctx, mx(m.dog.x), my(m.dog.y), 1.6 * d);
   }
 
   private pointer(px: number, py: number, label: string, color: string, t: number) {
@@ -983,4 +1043,19 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
     return p;
   };
   return [Math.round(f(h + 1 / 3) * 255), Math.round(f(h) * 255), Math.round(f(h - 1 / 3) * 255)];
+}
+
+/** Grazing sheep not yet gathered, clumped into groups (nearest first). */
+function strayGroups(m: Meadow): { x: number; y: number; n: number }[] {
+  const groups: { x: number; y: number; n: number }[] = [];
+  for (const s of m.sheep) {
+    if (s.state !== 'active' || s.gathered) continue;
+    const g = groups.find((g) => Math.hypot(g.x - s.x, g.y - s.y) < 9);
+    if (g) {
+      g.x += (s.x - g.x) / (g.n + 1);
+      g.y += (s.y - g.y) / (g.n + 1);
+      g.n++;
+    } else groups.push({ x: s.x, y: s.y, n: 1 });
+  }
+  return groups.sort((a, b) => Math.hypot(a.x - m.dog.x, a.y - m.dog.y) - Math.hypot(b.x - m.dog.x, b.y - m.dog.y)).slice(0, 6);
 }

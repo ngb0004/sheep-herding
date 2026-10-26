@@ -35,6 +35,8 @@ export class Meadow3D {
   private dogTail: THREE.Object3D | null = null;
   private def: MeadowDef | null = null;
   private heights: (x: number, y: number) => number = () => 0;
+  /** Bridge decks, so animals walk over the planks instead of through them. */
+  private decks: { x0: number; x1: number; y0: number; y1: number; top: number }[] = [];
   private tmp = new THREE.Object3D();
   private tmpV = new THREE.Vector3();
   private w = 1;
@@ -166,6 +168,13 @@ export class Meadow3D {
     this.sun.target.updateMatrixWorld();
   }
 
+  /** Where an animal's feet go: the ground, or the bridge deck when it's on one. */
+  private standAt(x: number, y: number): number {
+    let h = this.heights(x, y);
+    for (const d of this.decks) if (x > d.x0 && x < d.x1 && y > d.y0 && y < d.y1) h = Math.max(h, d.top);
+    return h;
+  }
+
   private updateSheep(m: Meadow, t: number): void {
     const mesh = this.sheepMesh!;
     const legsA = this.legsA!;
@@ -179,7 +188,7 @@ export class Meadow3D {
       // s.phase advances faster the faster the sheep moves, so stride follows speed.
       const stride = s.phase * 3;
       const bob = Math.abs(Math.sin(stride)) * 0.12 * trot;
-      o.position.set(s.x, this.heights(s.x, s.y) + bob, -s.y);
+      o.position.set(s.x, this.standAt(s.x, s.y) + bob, -s.y);
       o.rotation.set(0, s.heading, Math.sin(stride) * 0.05 * trot);
       const k = s.lamb ? 0.68 : 1;
       o.scale.set(k, k, k);
@@ -209,7 +218,7 @@ export class Meadow3D {
     this.lastT = t;
     this.dogStride += dt * (2 + speed * 2.6);
     const st = this.dogStride;
-    dog.position.set(d.x, this.heights(d.x, d.y) + Math.abs(Math.sin(st)) * 0.14 * run, -d.y);
+    dog.position.set(d.x, this.standAt(d.x, d.y) + Math.abs(Math.sin(st)) * 0.14 * run, -d.y);
     dog.rotation.set(0, d.heading, Math.sin(st) * 0.04 * run);
     // Gallop-ish: diagonal pairs swing in opposite phase.
     const swing = Math.sin(st) * (0.1 + 0.75 * run);
@@ -233,6 +242,7 @@ export class Meadow3D {
     this.world = g;
     this.scene.add(g);
     this.heights = makeHeights(def);
+    this.decks = [];
     const flat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
 
     // Terrain: the field plus a rising bank all round it.
@@ -324,6 +334,7 @@ export class Meadow3D {
         const span = st.width + 3.4;
         // Deck sits level with the higher bank so it reads as a bridge, not a ramp.
         const deckY = Math.max(this.heights(br.x, y - span / 2), this.heights(br.x, y + span / 2), 0) + 0.25;
+        this.decks.push({ x0: br.x - br.w / 2, x1: br.x + br.w / 2, y0: y - span / 2, y1: y + span / 2, top: deckY + 0.07 });
         const n = Math.round(span / 0.55);
         for (let i = 0; i < n; i++) {
           const z = -(y - span / 2) - (i + 0.5) * (span / n);
@@ -403,6 +414,7 @@ export class Meadow3D {
     side('north', p.left, p.top, p.right, p.top);
     side('west', p.left, p.bottom, p.left, p.top);
     side('east', p.right, p.bottom, p.right, p.top);
+    for (const w of p.wings) fence(w.ax, w.ay, w.bx, w.by);
     const mesh = new THREE.Mesh(mergeGeometries(parts), flat);
     mesh.castShadow = true;
     mesh.receiveShadow = true;

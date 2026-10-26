@@ -90,6 +90,9 @@ describe('meadow', { timeout: 60_000 }, () => {
     console.table(rows);
     // The bot is a rough herder; a person steering by eye does better.
     expect(rows[0].pct).toBeGreaterThanOrEqual(90);
+    // The first meadow should be a quick, easy win.
+    expect(rows[0].seconds).toBeLessThan(rows[0].limit * 0.6);
+    expect(rows[1].pct).toBeGreaterThanOrEqual(60);
     expect(rows[2].pct).toBeGreaterThanOrEqual(75);
     expect(rows[3].pct).toBeGreaterThanOrEqual(75);
   });
