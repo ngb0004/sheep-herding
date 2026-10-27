@@ -220,6 +220,11 @@ export class MeadowPilot {
       tx = subject.x + Math.cos(a) * r;
       ty = subject.y + Math.sin(a) * r;
     }
+    // Followed the sheep into the pen: walk back out of the gate first.
+    if (m.dog.x > p.left && m.dog.x < p.right && m.dog.y > p.bottom && m.dog.y < p.top) {
+      tx = p.outsideX;
+      ty = p.outsideY;
+    }
     m.target = {
       u: (tx - m.viewLeft()) / m.viewW,
       v: 1 - (ty - m.viewBottom()) / m.viewH,

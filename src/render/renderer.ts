@@ -579,9 +579,18 @@ export class Renderer {
     ctx.fill();
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
+    // Emoji and count drawn separately: emoji fonts render digits dim.
+    const icon = [...label][0];
+    const count = label.slice(icon.length);
     ctx.font = `800 ${Math.round(12 * this.dpr)}px ${EMOJI}`;
     ctx.fillStyle = color;
-    ctx.fillText(label, x, y + 1);
+    if (!count) {
+      ctx.fillText(icon, x, y + 1);
+      return;
+    }
+    ctx.fillText(icon, x - 6 * this.dpr, y + 1);
+    ctx.font = `900 ${Math.round(13 * this.dpr)}px ${UI_FONT}`;
+    ctx.fillText(count, x + 7 * this.dpr, y + 1);
   }
 
   private drawGround(world: World, sx: (x: number) => number, sy: (y: number) => number, left: number, top: number) {

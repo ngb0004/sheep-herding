@@ -58,7 +58,7 @@ const HAND_MADE: MeadowDef[] = [
     seconds: 75,
     seed: 11,
     dog: { x: 28, y: 5 },
-    pen: { x: 21, y: 63, w: 14, h: 9, gate: 'south', gateW: 9, wings: 7, draw: 1 },
+    pen: { x: 21, y: 67, w: 14, h: 9, gate: 'south', gateW: 9, draw: 1 },
     groups: [
       { x: 28, y: 15, n: 6 },
       { x: 12, y: 32, n: 5 },
@@ -74,10 +74,10 @@ const HAND_MADE: MeadowDef[] = [
     name: 'Gorse Hill',
     width: 76,
     height: 96,
-    seconds: 95,
+    seconds: 105,
     seed: 22,
     dog: { x: 10, y: 6 },
-    pen: { x: 58, y: 80, w: 12, h: 10, gate: 'west', gateW: 8, wings: 6, draw: 0.75 },
+    pen: { x: 64, y: 86, w: 12, h: 10, gate: 'west', gateW: 8, draw: 0.75 },
     groups: [
       { x: 20, y: 18, n: 7 },
       { x: 58, y: 14, n: 6 },
@@ -101,7 +101,7 @@ const HAND_MADE: MeadowDef[] = [
     seconds: 110,
     seed: 33,
     dog: { x: 44, y: 5 },
-    pen: { x: 8, y: 90, w: 14, h: 10, gate: 'east', gateW: 7, wings: 5, draw: 0.55 },
+    pen: { x: 0, y: 96, w: 14, h: 10, gate: 'east', gateW: 7, draw: 0.55 },
     groups: [
       { x: 18, y: 14, n: 8 },
       { x: 68, y: 12, n: 7 },
@@ -138,11 +138,13 @@ export function generateMeadow(id: number): MeadowDef {
   const gate = rng.pick(sides);
   const pw = 13;
   const ph = 10;
-  const px = gate === 'east' ? 6 : gate === 'west' ? width - pw - 6 : rng.range(8, width - pw - 8);
-  // Funnel wings and the follow-the-leader pull taper off as the meadows get harder.
+  // Early pens back onto the field fence so no sheep can slip round behind them;
+  // later ones stand out in the open, which is harder.
+  const inset = tier >= 4 ? 6 : 0;
+  const px = gate === 'east' ? inset : gate === 'west' ? width - pw - inset : rng.range(8, width - pw - 8);
+  // The follow-the-leader pull tapers off as the meadows get harder.
   const pen: PenDef = {
-    x: px, y: height - ph - 6, w: pw, h: ph, gate, gateW: 7,
-    wings: clamp(5 - tier * 0.4, 0, 5),
+    x: px, y: height - ph - inset, w: pw, h: ph, gate, gateW: 7,
     draw: clamp(0.5 - tier * 0.04, 0.15, 0.5),
   };
 
