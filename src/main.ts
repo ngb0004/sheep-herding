@@ -316,6 +316,7 @@ function clock(): number {
 
 const gatePops = new Map<string, { f: FloatText; total: number; at: number }>();
 let combo = 0;
+let comboPop: FloatText | null = null;
 let lastPennedAt = 0;
 
 function handleMeadowEvents(m: Meadow) {
@@ -332,16 +333,26 @@ function handleMeadowEvents(m: Meadow) {
         break;
       case 'penned': {
         sfx.penned();
-        // Sheep pouring in back to back build a combo.
+        // Sheep pouring in back to back build a combo, shown as one counter that climbs.
         const now = clock();
         combo = now - lastPennedAt < 900 ? combo + 1 : 1;
         lastPennedAt = now;
         renderer.burst(e.x, e.y, '#ffe27a', 6, 3, 0.12);
         if (combo >= 3) {
-          renderer.floatText(`x${combo}!`, e.x, e.y + 2.2, combo >= 8 ? '#ff9f43' : '#ffe27a', Math.min(2.2, 1 + combo * 0.1), 0.9);
+          const size = Math.min(m.viewW / 9, Math.max(1.6, m.viewW / 16) + combo * 0.02);
+          const colour = combo >= 8 ? '#ff9f43' : '#ffe27a';
+          if (comboPop && comboPop.life < comboPop.max) {
+            comboPop.text = `x${combo}!`;
+            comboPop.life = Math.min(comboPop.life, 0.2);
+            comboPop.size = size;
+            comboPop.color = colour;
+          } else {
+            const p = m.pen;
+            comboPop = renderer.floatText(`x${combo}!`, (p.left + p.right) / 2, (p.bottom + p.top) / 2 + 2, colour, size, 0.9);
+          }
           if (combo % 5 === 0) haptic(15);
         } else {
-          renderer.floatText('+1', e.x, e.y + 1.4, '#ffffff', 0.9, 0.8);
+          renderer.floatText('+1', e.x, e.y + 1.4, '#ffffff', Math.max(0.9, m.viewW / 22), 0.8);
         }
         if (Math.random() < 0.08) sfx.baa();
         break;

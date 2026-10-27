@@ -9,7 +9,7 @@ const quick = process.argv.includes('--quick');
   const { browser, page } = await open('http://localhost:4190/sheep-herding/play/?level=100&auto=good&capture&msaa=0', { dpr: quick ? 1 : 3 });
   const frames = new Frames(path.join(out, 'stampede-frames'));
   // Game speed (whole game-frames per video frame) by game time: slow for the gates, quick through the walk.
-  const speedAt = (t, penned) => (t < 3 ? 1 : t < 22 ? 2 : t < 58 ? 4 : penned === 0 ? 6 : 3);
+  const speedAt = (t, penned) => (t < 3 ? 1 : t < 22 ? 2 : t < 58 ? 4 : penned === 0 ? 6 : 4);
   let done = false;
   let doneFrames = 0;
   let firstGate = -1;
@@ -28,7 +28,7 @@ const quick = process.argv.includes('--quick');
     else if (st.flock > 300 && st.penned === 0 && st.flock < 700) cap = 'Keep growing the flock 😮';
     else if (st.penned > 0 || st.flock >= 700) cap = 'Now bring them ALL home! 🏡';
     await setCaption(page, cap);
-    await setCount(page, st.t < 3 ? '' : `🐑 ${st.flock + st.penned}`);
+    await setCount(page, st.t < 3 ? '' : st.penned > 0 ? `🏠 ${st.penned}` : `🐑 ${st.flock}`);
     await frames.shoot(page);
     if (!done) await page.evaluate((n) => window.__flock.advance(n, 30), speedAt(st.t, st.penned));
     else await page.evaluate(() => window.__flock.advance(1, 30));
