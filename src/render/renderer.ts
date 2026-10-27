@@ -33,7 +33,7 @@ interface Particle {
   color: string;
 }
 
-interface FloatText {
+export interface FloatText {
   text: string;
   x: number;
   y: number;
@@ -72,6 +72,8 @@ export class Renderer {
   private dogSprite?: Sprite;
   private spriteK = 0;
   private particles: Particle[] = [];
+  /** Ad recording: no minimap or edge arrows. */
+  adClean = false;
   private texts: FloatText[] = [];
   private rings: Ring[] = [];
   /** Screen-space confetti for the big finish (CSS px, falling). */
@@ -107,8 +109,10 @@ export class Renderer {
     }
   }
 
-  floatText(text: string, x: number, y: number, color: string, size = 1.1, life = 1.1) {
-    this.texts.push({ text, x, y, life: 0, max: life, color, size });
+  floatText(text: string, x: number, y: number, color: string, size = 1.1, life = 1.1): FloatText {
+    const f = { text, x, y, life: 0, max: life, color, size };
+    this.texts.push(f);
+    return f;
   }
 
   ring(x: number, y: number, r: number, color: string, life = 0.45) {
@@ -214,6 +218,7 @@ export class Renderer {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     this.drawMeadowGround(m, b, sx, sy);
     this.drawStreams(m, sx, sy, t);
+    this.drawGates(m, sx, sy, t);
     this.drawMeadowPen(m, sx, sy);
     this.drawMeadowWalls(m, b, sx, sy);
     this.drawObstacles(m.obstacles, b, sx, sy);
@@ -484,8 +489,34 @@ export class Renderer {
     this.drawPointers(m, proj, t);
   }
 
+  /** Multiplier gates: a glowing band across the field with a big label. */
+  private drawGates(m: Meadow, sx: (x: number) => number, sy: (y: number) => number, t: number) {
+    const ctx = this.ctx;
+    const k = this.k;
+    for (const g of m.def.gates ?? []) {
+      const colour = g.kind === 'x' ? (g.n >= 3 ? '43,217,107' : '79,209,255') : '91,140,255';
+      const x0 = sx(g.x0);
+      const x1 = sx(g.x1);
+      const y = sy(g.y);
+      ctx.fillStyle = `rgba(${colour},${(0.35 + Math.sin(t * 3) * 0.06).toFixed(3)})`;
+      ctx.fillRect(x0, y - 0.6 * k, x1 - x0, 1.2 * k);
+      ctx.fillStyle = '#ffffff';
+      dot(ctx, x0, y, 0.35 * k);
+      dot(ctx, x1, y, 0.35 * k);
+      ctx.font = `900 ${1.8 * k}px ${UI_FONT}`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineWidth = 0.25 * k;
+      ctx.strokeStyle = 'rgba(0,40,30,0.5)';
+      const label = (g.kind === 'x' ? '×' : '+') + g.n;
+      ctx.strokeText(label, (x0 + x1) / 2, y - 1.6 * k);
+      ctx.fillText(label, (x0 + x1) / 2, y - 1.6 * k);
+    }
+  }
+
   /** Edge-of-screen arrows to the pen and to every group still out grazing, plus the minimap. */
   private drawPointers(m: Meadow, proj: (x: number, y: number) => [number, number], t: number) {
+    if (this.adClean) return;
     const p = m.pen;
     this.pointer(...proj((p.left + p.right) / 2, (p.bottom + p.top) / 2), '🏠', '#ffe7a8', t);
     for (const g of strayGroups(m)) this.pointer(...proj(g.x, g.y), '🐑' + g.n, '#ffffff', t);

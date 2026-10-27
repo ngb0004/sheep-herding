@@ -147,7 +147,11 @@ export class MeadowPilot {
     let subject: { x: number; y: number } = c;
     let goal: { x: number; y: number };
 
-    if (c.n === 0 && stray) {
+    const gateGoal = m.def.snowball && c.n > 0 ? nextGate(m, c) : null;
+    if (m.def.snowball && c.n > 0) {
+      // Snowball: drive the flock up through the best gate ahead, then home.
+      goal = gateGoal ?? { x: penX, y: penY };
+    } else if (c.n === 0 && stray) {
       // Nothing gathered yet: start a flock by pushing the nearest group toward the gate.
       subject = stray;
       goal = { x: p.outsideX, y: p.outsideY };
@@ -175,7 +179,7 @@ export class MeadowPilot {
     }
 
     // Route through a wall gap or bridge if the way is blocked.
-    if (lineBlocked(m.def, subject.x, subject.y, goal.x, goal.y)) {
+    if (!m.def.snowball && lineBlocked(m.def, subject.x, subject.y, goal.x, goal.y)) {
       let best: { x: number; y: number } | null = null;
       let bestD = Infinity;
       for (const x of crossings(m.def)) {
@@ -200,15 +204,51 @@ export class MeadowPilot {
     dy /= d;
     // Stand close behind the subject so it keeps moving at a good trot.
     const size = subject === c ? spread : 0.8;
-    const stand = presence * 0.3 + size;
+    // A big snowball flock is pushed from its edge, not from a flock-width away.
+    const stand = m.def.snowball ? presence * 0.3 + size * 0.45 : presence * 0.3 + size;
     let tx = subject.x - dx * stand;
     let ty = subject.y - dy * stand;
+    let snowPush = false;
+    if (m.def.snowball && subject === c) {
+      // Steer by the body of sheep ahead of the dog (arrivals from behind
+      // flow round him), pushing from its back edge.
+      const gx = goal.x - m.dog.x;
+      const gy = goal.y - m.dog.y;
+      const gl = Math.hypot(gx, gy) || 1;
+      let ax = 0, ay = 0, an = 0;
+      for (const sh of m.sheep) {
+        if (sh.state !== 'active' || !sh.gathered) continue;
+        if (((sh.x - m.dog.x) * gx + (sh.y - m.dog.y) * gy) / gl < -1) continue;
+        ax += sh.x;
+        ay += sh.y;
+        an++;
+      }
+      if (an > 0) {
+        ax /= an;
+        ay /= an;
+        let bx = goal.x - ax;
+        let by = goal.y - ay;
+        const bl = Math.hypot(bx, by) || 1;
+        bx /= bl;
+        by /= bl;
+        let rear = 0;
+        for (const sh of m.sheep) {
+          if (sh.state !== 'active' || !sh.gathered) continue;
+          if (((sh.x - m.dog.x) * gx + (sh.y - m.dog.y) * gy) / gl < -1) continue;
+          const along = (sh.x - ax) * bx + (sh.y - ay) * by;
+          if (along < rear && along > -spread * 2.5) rear = along;
+        }
+        tx = ax + bx * (rear - presence * 0.45);
+        ty = ay + by * (rear - presence * 0.45);
+        snowPush = true;
+      }
+    }
     // Outrun: if the dog is on the wrong side, swing wide round the flock
     // instead of charging through it (and pushing it the wrong way).
     const ox = m.dog.x - subject.x;
     const oy = m.dog.y - subject.y;
     const od = Math.hypot(ox, oy) || 1;
-    if ((ox * dx + oy * dy) / od > -0.5 && od < stand + presence * 2.5) {
+    if (!snowPush && (ox * dx + oy * dy) / od > -0.5 && od < stand + presence * 2.5) {
       // Orbit just outside the flock's comfort zone, stepping round toward the back.
       const behind = Math.atan2(-dy, -dx);
       let a = Math.atan2(oy, ox);
@@ -231,11 +271,31 @@ export class MeadowPilot {
     };
 
     this.barkTimer -= dt;
-    if (this.barkTimer <= 0 && lost && lostD > 9) {
+    if (this.barkTimer <= 0 && lost && lostD > 9 && !m.def.snowball) {
       m.bark();
       this.barkTimer = 3;
     }
   }
+}
+
+/**
+ * Snowball route: the best gate in each row, every wall gap and bridge, in order
+ * up the field. Returns the first waypoint the flock hasn't passed yet.
+ */
+function nextGate(m: Meadow, c: { x: number; y: number; n: number }): { x: number; y: number } | null {
+  const pts: { x: number; y: number }[] = [];
+  const rows = new Map<number, NonNullable<Meadow['def']['gates']>>();
+  for (const g of m.def.gates ?? []) rows.set(g.y, [...(rows.get(g.y) ?? []), g]);
+  for (const row of rows.values()) {
+    // Multipliers win once the flock is big enough; early on a big '+' can be worth more.
+    const value = (g: (typeof row)[number]) => (g.kind === 'x' ? Math.max(c.n, 20) * (g.n - 1) : g.n);
+    const g = [...row].sort((a, b) => value(b) - value(a))[0];
+    pts.push({ x: (g.x0 + g.x1) / 2, y: g.y });
+  }
+  for (const x of crossings(m.def)) pts.push(x);
+  pts.sort((a, b) => a.y - b.y);
+  const next = pts.find((p) => p.y > c.y - 1.5);
+  return next ? { x: next.x, y: next.y + 6 } : null;
 }
 
 /** Is the point already in the lane between the gate's outside point and the pen? */

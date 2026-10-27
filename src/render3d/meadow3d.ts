@@ -69,6 +69,11 @@ export class Meadow3D {
   private dustT = 0;
   private wool: THREE.InstancedMesh | null = null;
   private faces: THREE.InstancedMesh | null = null;
+  /** Simpler sheep for when the camera has pulled right out over a huge flock. */
+  private woolLo: THREE.InstancedMesh | null = null;
+  private facesLo: THREE.InstancedMesh | null = null;
+  private lo = false;
+  private gates: { group: THREE.Group; panel: THREE.Mesh }[] = [];
   /** Legs in diagonal pairs (front-left + back-right, and the other two), swung in opposite phase. */
   private legsA: THREE.InstancedMesh | null = null;
   private legsB: THREE.InstancedMesh | null = null;
@@ -120,7 +125,8 @@ export class Meadow3D {
 
     // Tilt-shift: the far edge of the field softens, like a photo of a tabletop
     // model. Two blur passes in linear HDR, then tone mapping and colour space.
-    const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
+    const samples = Number(new URLSearchParams(location.search).get('msaa') ?? 4);
+    const target = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples });
     this.composer = new EffectComposer(this.renderer, target);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     this.blurX = new ShaderPass(TILT_SHIFT);
@@ -131,14 +137,24 @@ export class Meadow3D {
     this.composer.addPass(new OutputPass());
   }
 
+  /** Highest device pixel ratio to render at (raised for ad recording). */
+  private maxDpr = 2;
+  private lastDpr = 1;
+
+  setMaxDpr(v: number): void {
+    this.maxDpr = v;
+    this.resize(this.w, this.h, this.lastDpr);
+  }
+
   resize(cssW: number, cssH: number, dpr: number): void {
     this.w = cssW;
     this.h = cssH;
-    this.renderer.setPixelRatio(Math.min(dpr, 2));
+    this.lastDpr = dpr;
+    this.renderer.setPixelRatio(Math.min(dpr, this.maxDpr));
     this.renderer.setSize(cssW, cssH, false);
-    this.composer.setPixelRatio(Math.min(dpr, 2));
+    this.composer.setPixelRatio(Math.min(dpr, this.maxDpr));
     this.composer.setSize(cssW, cssH);
-    const px = Math.min(dpr, 2);
+    const px = Math.min(dpr, this.maxDpr);
     this.blurX.uniforms.texel.value.set(1 / (cssW * px), 1 / (cssH * px));
     this.blurY.uniforms.texel.value.set(1 / (cssW * px), 1 / (cssH * px));
     this.canvas.style.width = cssW + 'px';
@@ -282,8 +298,13 @@ export class Meadow3D {
   }
 
   private updateSheep(m: Meadow, t: number): void {
-    const wool = this.wool!;
-    const faces = this.faces!;
+    // Switch detail with a little hysteresis so it doesn't flicker.
+    if (!this.lo && m.viewW > 31) this.lo = true;
+    else if (this.lo && m.viewW < 29) this.lo = false;
+    this.wool!.visible = this.faces!.visible = !this.lo;
+    this.woolLo!.visible = this.facesLo!.visible = this.lo;
+    const wool = this.lo ? this.woolLo! : this.wool!;
+    const faces = this.lo ? this.facesLo! : this.faces!;
     const legsA = this.legsA!;
     const legsB = this.legsB!;
     const o = this.tmp;
@@ -339,6 +360,10 @@ export class Meadow3D {
       im.instanceMatrix.needsUpdate = true;
     }
     if (wool.instanceColor) wool.instanceColor.needsUpdate = true;
+    // Gates shimmer.
+    this.gates.forEach((g, i) => {
+      (g.panel.material as THREE.MeshBasicMaterial).opacity = 0.42 + Math.sin(t * 3 + i) * 0.08;
+    });
   }
 
   private updateDog(m: Meadow, t: number): void {
@@ -415,8 +440,9 @@ export class Meadow3D {
 
     // Sheep: instanced wool (tinted per sheep), face, and two pairs of legs.
     const geos = sheepGeometry();
+    const cap = Math.max(1, m.sheep.length, m.def.snowball?.maxSheep ?? 0);
     const inst = (geo: THREE.BufferGeometry) => {
-      const im = new THREE.InstancedMesh(geo, toy, Math.max(1, m.sheep.length));
+      const im = new THREE.InstancedMesh(geo, toy, cap);
       im.castShadow = true;
       im.receiveShadow = true;
       im.frustumCulled = false;
@@ -426,6 +452,9 @@ export class Meadow3D {
     this.wool = inst(geos.wool);
     this.wool.setColorAt(0, this.woolColor.set(0xffffff));
     this.faces = inst(geos.face);
+    this.woolLo = inst(geos.woolLo);
+    this.woolLo.setColorAt(0, this.woolColor.set(0xffffff));
+    this.facesLo = inst(geos.faceLo);
     this.legsA = inst(geos.legsA);
     this.legsB = inst(geos.legsB);
 
@@ -440,6 +469,14 @@ export class Meadow3D {
 
     this.dog = dogModel(toy);
     g.add(this.dog.root);
+
+    this.gates = (def.gates ?? []).map((gd) => {
+      const gate = gateModel(gd.x1 - gd.x0, gd.kind, gd.n, toy);
+      const cx = (gd.x0 + gd.x1) / 2;
+      gate.group.position.set(cx, Math.max(this.heights(gd.x0, gd.y), this.heights(gd.x1, gd.y), this.heights(cx, gd.y)), -gd.y);
+      g.add(gate.group);
+      return gate;
+    });
   }
 
   private buildTerrain(def: MeadowDef, g: THREE.Group): void {
@@ -742,10 +779,14 @@ export class Meadow3D {
     centre.translate(0, 0.12, 0);
     petals.push(colored(centre, new THREE.Color(0xffd23a)));
     const flowerGeo = mergeGeometries(petals);
-    const flowers = new THREE.InstancedMesh(flowerGeo, toyMaterial(this.uTime, { clouds: true, sway: true }), 900);
+    // Density follows the field's size, within what a phone can draw.
+    const area = def.width * def.height;
+    const maxFlowers = Math.min(1800, Math.round(area * 0.21));
+    const maxTufts = Math.min(6500, Math.round(area * 0.75));
+    const flowers = new THREE.InstancedMesh(flowerGeo, toyMaterial(this.uTime, { clouds: true, sway: true }), maxFlowers);
     const fc = new THREE.Color();
     let nf = 0;
-    for (let k = 0; k < 1400 && nf < 900; k++) {
+    for (let k = 0; k < maxFlowers * 1.6 && nf < maxFlowers; k++) {
       // Flowers grow in drifts, not evenly.
       const x = hash2(k, 7, def.seed) * def.width;
       const y = hash2(k, 8, def.seed) * def.height;
@@ -779,10 +820,10 @@ export class Meadow3D {
       blades.push(shaded(blade, 0xc4ee78, PAL.grass, 0, tall));
     }
     const tuftGeo = mergeGeometries(blades);
-    const tufts = new THREE.InstancedMesh(tuftGeo, toyMaterial(this.uTime, { clouds: true, sway: true }), 3200);
+    const tufts = new THREE.InstancedMesh(tuftGeo, toyMaterial(this.uTime, { clouds: true, sway: true }), maxTufts);
     const tc = new THREE.Color();
     let nt = 0;
-    for (let k = 0; k < 4200 && nt < 3200; k++) {
+    for (let k = 0; k < maxTufts * 1.3 && nt < maxTufts; k++) {
       const x = hash2(k, 17, def.seed) * (def.width + 4) - 2;
       const y = hash2(k, 18, def.seed) * (def.height + 4) - 2;
       if (inPen(x, y) || nearWater(x, y)) continue;
@@ -1029,7 +1070,14 @@ const NECK = { x: 0.42, y: 0.82 };
  * Wool and face are separate so black sheep can tint just their fleece and
  * heads can dip to graze. Legs come in diagonal pairs, pivoting at the hip.
  */
-function sheepGeometry(): { wool: THREE.BufferGeometry; face: THREE.BufferGeometry; legsA: THREE.BufferGeometry; legsB: THREE.BufferGeometry } {
+function sheepGeometry(): {
+  wool: THREE.BufferGeometry;
+  face: THREE.BufferGeometry;
+  woolLo: THREE.BufferGeometry;
+  faceLo: THREE.BufferGeometry;
+  legsA: THREE.BufferGeometry;
+  legsB: THREE.BufferGeometry;
+} {
   const woolParts: THREE.BufferGeometry[] = [];
   const add = (r: number, x: number, y: number, z: number, sx = 1, sy = 1, sz = 1) => {
     const b = blob(r, 2);
@@ -1091,12 +1139,85 @@ function sheepGeometry(): { wool: THREE.BufferGeometry; face: THREE.BufferGeomet
         return shaded(leg, 0x3a2f2c, 0x241c1a, -SHEEP_HIP, 0);
       }),
     );
+  // Low detail: a few soft lumps and a dark head, read from far away.
+  const woolLo: THREE.BufferGeometry[] = [];
+  for (const [r, x, y, z, sx] of [
+    [0.5, 0, 0.74, 0, 1.2],
+    [0.3, -0.12, 1.06, 0, 1.1],
+    [0.26, 0.2, 1.0, 0, 1],
+  ]) {
+    const b = blob(r, 1);
+    b.scale(sx, 0.9, 1);
+    b.translate(x, y, z);
+    woolLo.push(shaded(b, PAL.wool, PAL.woolShade, 0.4, 1.15));
+  }
+  const headLo = blob(0.28, 1);
+  headLo.scale(1.12, 1, 0.9);
+  headLo.translate(0.62, 0.86, 0);
   return {
+    woolLo: mergeGeometries(woolLo),
+    faceLo: shaded(headLo, 0x4a3d39, 0x2a2220, 0.65, 1.1),
     wool: mergeGeometries(woolParts),
     face: mergeGeometries(faceParts),
     legsA: pair([[0.28, 0.18], [-0.28, -0.18]]),
     legsB: pair([[0.28, -0.18], [-0.28, 0.18]]),
   };
+}
+
+/**
+ * A multiplier gate, centred on its group's origin: two rounded white posts,
+ * a glowing see-through panel and a big label. Green multiplies, blue adds.
+ */
+function gateModel(width: number, kind: 'x' | '+', n: number, mat: THREE.Material): { group: THREE.Group; panel: THREE.Mesh } {
+  const group = new THREE.Group();
+  const colour = kind === 'x' ? (n >= 3 ? 0x2bd96b : 0x4fd1ff) : 0x5b8cff;
+  const h = 2.6;
+  const parts: THREE.BufferGeometry[] = [];
+  for (const side of [-1, 1]) {
+    const post = new RoundedBoxGeometry(0.5, h + 0.4, 0.5, 2, 0.18);
+    post.translate((side * width) / 2, (h + 0.4) / 2, 0);
+    parts.push(shaded(post, 0xffffff, 0xd8dde6, 0, h));
+    const ball = new THREE.SphereGeometry(0.42, 16, 12);
+    ball.translate((side * width) / 2, h + 0.6, 0);
+    parts.push(colored(ball, new THREE.Color(colour)));
+  }
+  const posts = new THREE.Mesh(mergeGeometries(parts), mat);
+  posts.castShadow = true;
+  group.add(posts);
+
+  const panel = new THREE.Mesh(
+    new THREE.PlaneGeometry(width, h),
+    new THREE.MeshBasicMaterial({ color: colour, transparent: true, opacity: 0.45, side: THREE.DoubleSide, depthWrite: false }),
+  );
+  panel.position.y = h / 2;
+  group.add(panel);
+
+  // Label, drawn once to a canvas texture.
+  const cv = document.createElement('canvas');
+  cv.width = 512;
+  cv.height = 256;
+  const ctx = cv.getContext('2d')!;
+  ctx.font = '900 190px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineWidth = 22;
+  ctx.strokeStyle = 'rgba(0,40,30,0.55)';
+  const text = (kind === 'x' ? '×' : '+') + n;
+  ctx.strokeText(text, 256, 140);
+  ctx.fillStyle = '#ffffff';
+  ctx.fillText(text, 256, 140);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const lw = Math.min(width * 0.8, 9);
+  const label = new THREE.Mesh(
+    new THREE.PlaneGeometry(lw, lw / 2),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, side: THREE.DoubleSide }),
+  );
+  // Tip it back toward the camera so it reads from above.
+  label.rotation.x = -0.55;
+  label.position.set(0, h + lw * 0.22, 0.2);
+  group.add(label);
+  return { group, panel };
 }
 
 interface DogRig {

@@ -8,6 +8,7 @@ export type MeadowEvent =
   | { type: 'penned'; x: number; y: number }
   | { type: 'bark'; x: number; y: number; radius: number }
   | { type: 'warning' }
+  | { type: 'gate'; x: number; y: number; n: number; label: string }
   | { type: 'done'; allPenned: boolean };
 
 export interface PenBox {
@@ -47,7 +48,7 @@ export class Meadow {
   readonly pen: PenBox;
   readonly dog: Dog;
   readonly events: MeadowEvent[] = [];
-  readonly total: number;
+  total: number;
   readonly limit: number;
 
   viewW = 20;
@@ -67,6 +68,9 @@ export class Meadow {
   target = { u: 0.5, v: 0.75 };
 
   private flock = new FlockSim();
+  private nextId = 1;
+  /** '+N' gates pay out once. */
+  private gateUsed = new Set<number>();
   private warned = false;
   private center = { x: 0, y: 0, n: 0 };
 
@@ -91,6 +95,7 @@ export class Meadow {
       }
     }
     this.total = this.sheep.length;
+    this.nextId = id;
     if (this.total !== totalSheep(def)) throw new Error('sheep count mismatch');
 
     this.dog = { x: def.dog.x, y: def.dog.y, vx: 0, vy: 0, heading: Math.PI / 2, barkCooldown: 0 };
@@ -147,9 +152,13 @@ export class Meadow {
       flockX: this.center.x,
       flockY: this.center.y,
       flockN: this.center.n,
-      extra: this.penDraw,
+      extra: this.extra,
+      // Snowball: a driven flock breaks into a trot, not a stroll.
+      paceFloor: this.def.snowball ? 3 : undefined,
+      swingToFlock: !!this.def.snowball,
     }, dt);
     this.updateGathering();
+    this.updateGates();
     this.updatePen(dt);
     this.updateCamera(dt);
 
@@ -157,7 +166,9 @@ export class Meadow {
       this.warned = true;
       this.events.push({ type: 'warning' });
     }
-    if (this.penned === this.total || this.time >= this.limit) {
+    // Snowball: the run ends once the whole flock is home, even with strays left in the hills.
+    const flockHome = !!this.def.snowball && this.penned > 0 && this.gathered === this.penned;
+    if (this.penned === this.total || this.time >= this.limit || flockHome) {
       this.allPenned = this.penned === this.total;
       this.phase = 'done';
       this.events.push({ type: 'done', allPenned: this.allPenned });
@@ -168,6 +179,22 @@ export class Meadow {
    * Sheep follow their leaders: a gathered sheep near the open gate drifts in on its own,
    * more readily once others are already inside. Early meadows lean on this a lot.
    */
+  private extra = (s: Sheep, acc: { x: number; y: number }): void => {
+    this.penDraw(s, acc);
+    // And a big flock keeps its stragglers, however far they've drifted.
+    if (this.def.snowball && s.gathered && s.state === 'active' && this.center.n > 1) {
+      const fx = this.center.x - s.x;
+      const fy = this.center.y - s.y;
+      const fd = Math.hypot(fx, fy);
+      const r = 1 + Math.sqrt(this.center.n) * 0.5;
+      if (fd > r) {
+        const k = Math.min(4, (fd - r) * 0.5);
+        acc.x += (fx / fd) * k;
+        acc.y += (fy / fd) * k;
+      }
+    }
+  };
+
   private penDraw = (s: Sheep, acc: { x: number; y: number }): void => {
     const draw = this.def.pen.draw ?? 0;
     if (!draw || !s.gathered || s.state !== 'active') return;
@@ -175,7 +202,7 @@ export class Meadow {
     const dx = s.x - p.gateX;
     const dy = s.y - p.gateY;
     const d = Math.hypot(dx, dy);
-    const reach = 9 + (this.def.pen.wings ?? 0);
+    const reach = 9 + (this.def.pen.wings ?? 0) + (this.def.snowball ? this.def.pen.gateW / 2 : 0);
     // Only from the gate side, so sheep behind the pen don't press into its back wall.
     if (d > reach || dx * p.nx + dy * p.ny < -0.5) return;
     const ix = p.gateX - p.nx * 2.5 - s.x;
@@ -210,8 +237,19 @@ export class Meadow {
   /** Sheep the dog has moved (or that got swept up by the moving flock) join it. */
   private updateGathering(): void {
     let n = 0, x = 0, y = 0;
+    const c = this.center;
+    // A snowball flock calls grazing sheep over from further away the bigger it is.
+    const call = this.def.snowball && c.n > 0 ? 2.5 + Math.sqrt(c.n) * 0.85 : -1;
+    const flockR = 1 + Math.sqrt(c.n) * 0.5;
     for (const s of this.sheep) {
       if (s.state !== 'active' || s.gathered) continue;
+      const dc = call > 0 ? Math.hypot(s.x - c.x, s.y - c.y) : Infinity;
+      if (dc < flockR + call) {
+        // They come running to join.
+        s.fx = (c.x - s.x) / (dc || 1);
+        s.fy = (c.y - s.y) / (dc || 1);
+        s.fs = Math.max(s.fs, 3.2);
+      }
       if (s.panic > 0.25 || s.fs > 0.6) {
         s.gathered = true;
         this.gathered++;
@@ -221,6 +259,47 @@ export class Meadow {
       }
     }
     if (n > 0) this.events.push({ type: 'joined', x: x / n, y: y / n, n });
+  }
+
+  /** Gates multiply the flock sheep that walk through them. */
+  private updateGates(): void {
+    const gates = this.def.gates;
+    if (!gates) return;
+    const cap = this.def.snowball?.maxSheep ?? 400;
+    gates.forEach((g, gi) => {
+      const id = 1000 + gi;
+      let made = 0;
+      let mx = 0;
+      let my = 0;
+      const crossing = this.sheep.filter(
+        (s) => s.state === 'active' && s.gathered && !s.used.has(id) && s.x > g.x0 && s.x < g.x1 && Math.abs(s.y - g.y) < 0.9,
+      );
+      for (const s of crossing) {
+        s.used.add(id);
+        const extra = g.kind === 'x' ? g.n - 1 : this.gateUsed.has(id) ? 0 : g.n;
+        this.gateUsed.add(id);
+        for (let k = 0; k < extra && this.sheep.length < cap; k++) {
+          const a = this.rng.range(0, Math.PI * 2);
+          const r = 0.5 + this.rng.next() * (g.kind === '+' ? 2.5 : 0.8);
+          const c = makeSheep(this.nextId++, s.x + Math.cos(a) * r, s.y + 1 + Math.abs(Math.sin(a)) * r, this.rng);
+          c.gathered = true;
+          c.used = new Set(s.used);
+          c.vx = s.vx;
+          c.vy = s.vy;
+          c.fx = s.fx;
+          c.fy = s.fy;
+          c.fs = s.fs;
+          c.heading = s.heading;
+          this.sheep.push(c);
+          this.total++;
+          this.gathered++;
+          made++;
+          mx += c.x;
+          my += c.y;
+        }
+      }
+      if (made > 0) this.events.push({ type: 'gate', x: mx / made, y: my / made, n: made, label: (g.kind === 'x' ? 'x' : '+') + g.n });
+    });
   }
 
   private updatePen(dt: number): void {
@@ -255,7 +334,7 @@ export class Meadow {
     const c = this.center;
     let fx = this.dog.x;
     let fy = this.dog.y;
-    if (c.n > 0 && Math.hypot(c.x - fx, c.y - fy) < 28) {
+    if (c.n > 0 && Math.hypot(c.x - fx, c.y - fy) < 28 + Math.sqrt(c.n)) {
       fx = fx * 0.55 + c.x * 0.45;
       fy = fy * 0.55 + c.y * 0.45;
     }
@@ -273,7 +352,10 @@ export class Meadow {
     this.camY = clamp(this.camY, this.dog.y - bandY, this.dog.y + bandY);
 
     // Zoom out a little as the flock grows.
-    const wantW = clamp(20 + Math.sqrt(this.gathered - this.penned + 1) * 0.8, 20, 30);
+    const flock = this.gathered - this.penned + 1;
+    const wantW = this.def.snowball
+      ? clamp(20 + Math.sqrt(flock) * 1.25, 20, 58)
+      : clamp(20 + Math.sqrt(flock) * 0.8, 20, 30);
     this.viewW += (wantW - this.viewW) * Math.min(1, dt * 0.8);
     this.viewH = this.viewW * this.aspect;
     this.clampCamera();

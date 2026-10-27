@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { MeadowPilot } from './autopilot';
 import { DEFAULT_LEVELS, DogLevels, dogStats } from './dog';
 import { Meadow, streamSegments } from './meadow';
-import { getMeadow, totalSheep } from './meadowLevels';
+import { STAMPEDE_ID, getMeadow, totalSheep } from './meadowLevels';
 
 const DT = 1 / 60;
 
@@ -80,7 +80,14 @@ describe('meadow', { timeout: 60_000 }, () => {
     expect(m.dog.y).toBeLessThan(p.bottom);
   });
 
-  it('doing nothing pens nobody', () => {
+  it('Stampede Valley snowballs a handful into a huge flock and brings it home', () => {
+    const r = playMeadow(STAMPEDE_ID);
+    console.table([r]);
+    expect(r.total).toBeGreaterThan(500);
+    expect(r.penned).toBeGreaterThan(500);
+  });
+
+    it('doing nothing pens nobody', () => {
     const r = playMeadow(1, DEFAULT_LEVELS, null);
     expect(r.penned).toBe(0);
   });

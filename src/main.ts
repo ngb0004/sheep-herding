@@ -3,9 +3,9 @@ import { Autopilot, MeadowPilot } from './game/autopilot';
 import { MAX_STAT_LEVEL, STAT_IDS, STAT_INFO, StatId, dogStats, upgradeCost } from './game/dog';
 import { getLevel, starTargets } from './game/levels';
 import { Meadow } from './game/meadow';
-import { getMeadow } from './game/meadowLevels';
+import { STAMPEDE_ID, getMeadow } from './game/meadowLevels';
 import { World } from './game/world';
-import { Renderer } from './render/renderer';
+import { FloatText, Renderer } from './render/renderer';
 import { Meadow3D } from './render3d/meadow3d';
 import { SaveData, loadSave, writeSave } from './save';
 
@@ -34,6 +34,8 @@ const save: SaveData = loadSave();
 sfx.enabled = save.sound;
 
 const params = new URLSearchParams(location.search);
+// ?capture steps the game one video frame at a time (see __flock.advance) for smooth ad recording.
+const capture = params.has('capture');
 let screen: Screen = 'home';
 let mode: Mode = params.get('mode') === 'trail' ? 'trail' : 'roundup';
 let levelId = Number(params.get('level')) || unlockedFor(mode);
@@ -60,6 +62,7 @@ function use3d(): boolean {
     try {
       view3d = new Meadow3D(canvas3d);
       view3d.resize(cssW, cssH, window.devicePixelRatio || 1);
+      if (capture) view3d.setMaxDpr(3);
     } catch {
       gfx3d = false; // no WebGL: fall back to 2D
       return false;
@@ -193,6 +196,10 @@ function doBark() {
 
 function frame(now: number) {
   requestAnimationFrame(frame);
+  tick(now);
+}
+
+function tick(now: number, draw = true) {
   const dt = Math.min(0.1, (now - lastFrame) / 1000);
   lastFrame = now;
 
@@ -217,6 +224,7 @@ function frame(now: number) {
   } else {
     acc = 0;
   }
+  if (!draw) return;
   const rdt = screen === 'playing' ? dt : 0;
   const three = use3d();
   canvas3d.classList.toggle('hidden', !three);
@@ -266,7 +274,7 @@ function handleEvents() {
       case 'penned': {
         sfx.penned();
         // Sheep pouring in back to back build a combo.
-        const now = performance.now();
+        const now = clock();
         combo = now - lastPennedAt < 900 ? combo + 1 : 1;
         lastPennedAt = now;
         renderer.burst(e.x, e.y, '#ffe27a', 6, 3, 0.12);
@@ -293,7 +301,7 @@ function handleEvents() {
         showBanner('Pen them!');
         break;
       case 'done':
-        doneAt = performance.now();
+        doneAt = clock();
         showBanner(world.penned > 0 ? `${world.penned} penned!` : 'They got away…');
         break;
     }
@@ -301,6 +309,12 @@ function handleEvents() {
   world.events.length = 0;
 }
 
+/** Wall-clock ms, or the stepped video clock while recording. */
+function clock(): number {
+  return capture ? virtualNow : performance.now();
+}
+
+const gatePops = new Map<string, { f: FloatText; total: number; at: number }>();
 let combo = 0;
 let lastPennedAt = 0;
 
@@ -309,7 +323,9 @@ function handleMeadowEvents(m: Meadow) {
     switch (e.type) {
       case 'joined':
         sfx.pop(e.n * 3);
-        renderer.floatText('+' + e.n, e.x, e.y + 1.5, '#d8ff6a', 1.3);
+        // In a big snowball flock the HUD counter tells the story; skip the tiny pops.
+        if (!(m.def.snowball && m.flockCenter().n > 30 && e.n < 4))
+          renderer.floatText('+' + e.n, e.x, e.y + 1.5, '#d8ff6a', Math.max(1.3, m.viewW / 22));
         renderer.burst(e.x, e.y, '#ffffff', 4, 2.5, 0.14);
         sfx.baa(1.1);
         haptic(10);
@@ -317,7 +333,7 @@ function handleMeadowEvents(m: Meadow) {
       case 'penned': {
         sfx.penned();
         // Sheep pouring in back to back build a combo.
-        const now = performance.now();
+        const now = clock();
         combo = now - lastPennedAt < 900 ? combo + 1 : 1;
         lastPennedAt = now;
         renderer.burst(e.x, e.y, '#ffe27a', 6, 3, 0.12);
@@ -335,12 +351,33 @@ function handleMeadowEvents(m: Meadow) {
         renderer.ring(e.x, e.y, e.radius, 'rgba(255,255,255,0.9)');
         renderer.addShake(0.25);
         break;
+      case 'gate': {
+        // One counter per gate that keeps climbing while the flock pours through.
+        const key = e.label + Math.round(e.y);
+        const now = clock();
+        const live = gatePops.get(key);
+        if (live && now - live.at < 700) {
+          live.total += e.n;
+          live.at = now;
+          live.f.text = `${e.label}!  +${live.total}`;
+          live.f.life = Math.min(live.f.life, 0.25);
+          live.f.size = Math.min(live.f.size * 1.02, m.viewW / 9);
+        } else {
+          const f = renderer.floatText(`${e.label}!  +${e.n}`, e.x, e.y + 3, '#fff36a', Math.max(1.6, m.viewW / 14), 1.4);
+          gatePops.set(key, { f, total: e.n, at: now });
+          sfx.pickup();
+        }
+        sfx.pop(Math.min(30, e.n));
+        renderer.burst(e.x, e.y, '#ffffff', Math.min(6, e.n), 4, 0.16);
+        haptic(10);
+        break;
+      }
       case 'warning':
         showBanner('Sun’s going down!');
         sfx.lost();
         break;
       case 'done':
-        doneAt = performance.now();
+        doneAt = clock();
         showBanner(e.allPenned ? 'All home!' : m.penned > 0 ? `${m.penned} penned` : 'Night fell…');
         if (e.allPenned) {
           sfx.fanfare();
@@ -371,7 +408,10 @@ function updateHud() {
     const withYou = Math.max(0, m.gathered - m.penned);
     const key = m.penned * 10000 + withYou;
     if (key !== lastCount) {
-      countEl.innerHTML = `🏠 ${m.penned}/${m.total}<small>${withYou} with you</small>`;
+      // Snowball levels are about the size of the flock you bring home.
+      countEl.innerHTML = m.def.snowball
+        ? `🐑 ${withYou + m.penned}<small>${m.penned ? `${m.penned} home` : 'in your flock'}</small>`
+        : `🏠 ${m.penned}/${m.total}<small>${withYou} with you</small>`;
       if (key > lastCount) {
         countEl.classList.add('pop');
         setTimeout(() => countEl.classList.remove('pop'), 90);
@@ -422,14 +462,16 @@ function startLevel(id: number, m: Mode = mode) {
   overlay.innerHTML = '';
   hud.classList.remove('hidden');
   progressEl.classList.toggle('sun', mode === 'roundup');
-  hintEl.innerHTML =
-    mode === 'roundup'
+  const snowball = world instanceof Meadow && !!world.def.snowball;
+  hintEl.innerHTML = snowball
+    ? 'Drive your flock through the gates to multiply it.<br />Bring them all home!'
+    : mode === 'roundup'
       ? 'Drag to move your dog.<br />Round up every sheep and pen them before sunset.'
       : 'Drag to move your dog.<br />Sheep run away from him.';
-  hintEl.classList.toggle('gone', id > 2);
+  hintEl.classList.toggle('gone', id > 2 && !snowball);
   window.setTimeout(() => hintEl.classList.add('gone'), 6000);
   levelNameEl.textContent = `Level ${id} · ${levelName(world)}`;
-  showBanner(mode === 'roundup' ? `Round-up ${id}` : `Trail ${id}`);
+  showBanner(snowball ? levelName(world) : mode === 'roundup' ? `Round-up ${id}` : `Trail ${id}`);
   updateHud();
 }
 
@@ -506,6 +548,7 @@ function finishLevel() {
 }
 
 function finishMeadow(m: Meadow) {
+  if (m.def.snowball) return finishStampede(m);
   const pct = m.penned / m.total;
   const stars = MEADOW_STARS.filter((t) => pct >= t).length;
   const bonus = m.allPenned ? Math.ceil(m.timeLeft()) : 0;
@@ -551,6 +594,42 @@ function finishMeadow(m: Meadow) {
   }
 }
 
+/** Snowball results: stars for how big a flock you brought home. */
+function finishStampede(m: Meadow) {
+  const targets = m.def.snowball!.stars;
+  const stars = targets.filter((t) => m.penned >= t).length;
+  const wool = Math.round(m.penned / 2) + stars * 25;
+  save.wool += wool;
+  save.meadowStars[levelId] = Math.max(save.meadowStars[levelId] ?? 0, stars);
+  save.meadowBest[levelId] = Math.max(save.meadowBest[levelId] ?? 0, m.penned);
+  writeSave(save);
+  screen = 'results';
+  hud.classList.add('hidden');
+  const nextAt = targets.find((t) => m.penned < t);
+  const starHtml = [0, 1, 2]
+    .map((i) => (i < stars ? `<span class="on" style="animation-delay:${0.25 + i * 0.3}s">★</span>` : '★'))
+    .join('');
+  overlay.innerHTML = `
+    <div class="screen" style="justify-content:center">
+      <div class="card" style="text-align:center">
+        <p class="muted">${m.def.name}</p>
+        <div class="stars">${starHtml}</div>
+        <div class="big-number">${m.penned}</div>
+        <p style="margin:4px 0 0;font-weight:800">sheep home</p>
+        <p class="muted">${nextAt ? `${nextAt} for the next ★` : 'A legendary flock!'} · best ${save.meadowBest[levelId]}</p>
+        <p><span class="wool">🧶 +${wool} wool</span></p>
+      </div>
+      <div class="row">
+        <button class="btn primary" data-act="retry">Again! ▶</button>
+      </div>
+      <button class="toggle" data-act="home">Home</button>
+    </div>`;
+  if (stars > 0) {
+    sfx.fanfare();
+    for (let i = 0; i < stars; i++) setTimeout(() => sfx.star(i), 250 + i * 300);
+  }
+}
+
 function showHome() {
   screen = 'home';
   hud.classList.add('hidden');
@@ -580,6 +659,12 @@ function showHome() {
         <button class="btn primary" data-act="play" data-mode="roundup" data-level="${next}">Herd! ▶</button>
       </div>
       <div class="levels">${chips.join('')}</div>
+      <div class="card small stampede-card" style="text-align:center">
+        <p class="muted" style="margin:0">Special <span class="mode-tag">NEW</span></p>
+        <h2 style="margin:2px 0 8px">🐑 Stampede Valley</h2>
+        <p class="muted" style="margin:0 0 8px">Start with 6. How many can you bring home?${save.meadowBest[STAMPEDE_ID] ? ` Best: ${save.meadowBest[STAMPEDE_ID]}` : ''}</p>
+        <button class="btn primary" data-act="play" data-mode="roundup" data-level="${STAMPEDE_ID}">Stampede! ▶</button>
+      </div>
       <div class="row">
         <button class="btn green" data-act="dog">Upgrade dog 🐕</button>
       </div>
@@ -693,8 +778,21 @@ overlay.addEventListener('click', (e) => {
     autoMode = m;
     pilot = makePilot();
   },
+  /** Capture mode: advance the game by whole video frames. */
+  advance(frames = 1, fps = 30, draw = true) {
+    for (let i = 0; i < frames; i++) {
+      virtualNow += 1000 / fps;
+      tick(virtualNow, draw && i === frames - 1);
+    }
+  },
+  renderer,
+  get view3d() {
+    return view3d;
+  },
 };
 
 if (params.get('level')) startLevel(levelId, mode);
 else showHome();
-requestAnimationFrame(frame);
+let virtualNow = performance.now();
+if (capture) renderer.adClean = true;
+else requestAnimationFrame(frame);

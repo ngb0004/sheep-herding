@@ -26,6 +26,18 @@ export interface StreamDef {
   bridges: { x: number; w: number }[];
 }
 
+/**
+ * A glowing gate across part of the field. Every flock sheep walking through
+ * it for the first time is multiplied (`x`) or the flock gains sheep (`+`, once).
+ */
+export interface GateDef {
+  x0: number;
+  x1: number;
+  y: number;
+  kind: 'x' | '+';
+  n: number;
+}
+
 /** An open-meadow round-up: gather the scattered sheep and pen them before sunset. */
 export interface MeadowDef {
   id: number;
@@ -43,6 +55,13 @@ export interface MeadowDef {
   walls: [number, number, number, number][];
   streams: StreamDef[];
   obstacles: Obstacle[];
+  gates?: GateDef[];
+  /**
+   * Snowball meadows: the flock grows as it goes. Grazing sheep near the flock
+   * run over to join (from further away the bigger it gets), and stars are
+   * for how many sheep you bring home rather than a share of the field.
+   */
+  snowball?: { maxSheep: number; stars: [number, number, number] };
 }
 
 const tree = (x: number, y: number, r = 1.8): Obstacle => ({ kind: 'tree', x, y, r });
@@ -122,7 +141,65 @@ const HAND_MADE: MeadowDef[] = [
   },
 ];
 
+/** Special meadow ids, outside the numbered campaign. */
+export const STAMPEDE_ID = 100;
+
+/** Stampede Valley: start with a handful, sweep up the valley through the gates, bring a vast flock home. */
+const STAMPEDE: MeadowDef = (() => {
+  const width = 64;
+  const height = 270;
+  const rng = new Rng(1001);
+  const groups: MeadowDef['groups'] = [];
+  // Grazing groups up the valley, bigger the further you go.
+  for (let i = 0; i < 26; i++) {
+    const y = 22 + i * 7.6 + rng.range(-2, 2);
+    const x = i % 2 ? rng.range(8, 28) : rng.range(36, 56);
+    groups.push({ x, y, n: Math.round(3 + i * 0.55 + rng.range(0, 3)) });
+  }
+  groups.unshift({ x: 32, y: 9, n: 6 });
+  const obstacles: Obstacle[] = [];
+  for (let i = 0; i < 26; i++) {
+    const kind = rng.pick(['tree', 'rock', 'bush'] as const);
+    const x = i % 2 ? rng.range(3, 12) : rng.range(52, 61);
+    obstacles.push({ kind, x, y: 16 + i * 9.5 + rng.range(-3, 3), r: kind === 'tree' ? 1.8 : rng.range(1.1, 1.6) });
+  }
+  return {
+    id: STAMPEDE_ID,
+    name: 'Stampede Valley',
+    width,
+    height,
+    seconds: 170,
+    seed: 77,
+    dog: { x: 32, y: 3 },
+    pen: { x: 3, y: height - 36, w: 58, h: 32, gate: 'south', gateW: 46, draw: 1 },
+    groups,
+    walls: [
+      [0, 112, 18, 112],
+      [46, 112, 64, 112],
+    ],
+    streams: [
+      {
+        points: [[0, 178], [20, 182], [44, 176], [64, 180]],
+        width: 4,
+        bridges: [{ x: 32, w: 30 }],
+      },
+    ],
+    obstacles,
+    gates: [
+      { x0: 6, x1: 29, y: 44, kind: '+', n: 12 },
+      { x0: 35, x1: 58, y: 44, kind: 'x', n: 2 },
+      { x0: 6, x1: 29, y: 92, kind: 'x', n: 2 },
+      { x0: 35, x1: 58, y: 92, kind: 'x', n: 3 },
+      { x0: 20, x1: 44, y: 145, kind: 'x', n: 3 },
+      { x0: 8, x1: 30, y: 210, kind: 'x', n: 2 },
+      { x0: 34, x1: 56, y: 210, kind: '+', n: 40 },
+    ],
+    snowball: { maxSheep: 800, stars: [150, 400, 650] },
+  };
+})();
+
 export function getMeadow(id: number): MeadowDef {
+  if (id === STAMPEDE_ID) return STAMPEDE;
   if (id <= HAND_MADE.length) return HAND_MADE[id - 1];
   return generateMeadow(id);
 }

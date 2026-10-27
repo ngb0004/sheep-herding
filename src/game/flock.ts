@@ -123,6 +123,10 @@ export interface FlockContext {
   extra?: (s: Sheep, acc: { x: number; y: number }, dt: number) => void;
   /** Mode-specific minimum top speed, e.g. trotting uphill in trail mode. */
   speedFloor?: (s: Sheep) => number;
+  /** Slowest a pushed group moves (default walking pace). Snowball flocks trot. */
+  paceFloor?: number;
+  /** Pushed stragglers of the main flock run round the dog back to it (snowball). */
+  swingToFlock?: boolean;
 }
 
 export function makeSheep(id: number, x: number, y: number, rng: Rng, parent?: Sheep, lamb = false): Sheep {
@@ -161,6 +165,8 @@ interface Group {
   dx: number;
   dy: number;
   pace: number;
+  /** How many of its sheep belong to the player's flock. */
+  gathered: number;
 }
 
 /**
@@ -387,12 +393,13 @@ export class FlockSim {
       const root = this.find(i);
       let g = this.groups.get(root);
       if (!g) {
-        g = { sx: 0, sy: 0, n: 0, near: Infinity, dx: 0, dy: 0, pace: 0 };
+        g = { sx: 0, sy: 0, n: 0, near: Infinity, dx: 0, dy: 0, pace: 0, gathered: 0 };
         this.groups.set(root, g);
       }
       g.sx += s.x;
       g.sy += s.y;
       g.n++;
+      if (s.gathered) g.gathered++;
       g.near = Math.min(g.near, Math.hypot(s.x - dog.x, s.y - dog.y));
     }
 
@@ -406,9 +413,29 @@ export class FlockSim {
       dx /= d;
       dy /= d;
       const approach = Math.max(0, dog.vx * dx + dog.vy * dy);
+      if (ctx.swingToFlock && ctx.flockN > g.n * 1.5 && g.gathered * 2 > g.n) {
+        // Stragglers of the flock circle round the dog to get back to it,
+        // rather than fleeing straight away and getting stranded behind him.
+        const tx = ctx.flockX - g.sx / g.n;
+        const ty = ctx.flockY - g.sy / g.n;
+        const tl = Math.hypot(tx, ty);
+        if (tl > 2) {
+          let nx = dx + (tx / tl) * 1.3;
+          let ny = dy + (ty / tl) * 1.3;
+          if (nx * dx + ny * dy < 0.25) {
+            // Straight to the flock would mean through the dog: go round him.
+            const side = -dy * tx + dx * ty > 0 ? 1 : -1;
+            nx = -dy * side + dx * 0.3;
+            ny = dx * side + dy * 0.3;
+          }
+          const nl = Math.hypot(nx, ny) || 1;
+          dx = nx / nl;
+          dy = ny / nl;
+        }
+      }
       g.dx = dx;
       g.dy = dy;
-      g.pace = clamp(approach + F.flightGain * (presence - g.near), F.walkSpeed, F.runSpeed);
+      g.pace = clamp(approach + F.flightGain * (presence - g.near), ctx.paceFloor ?? F.walkSpeed, F.runSpeed);
     }
   }
 
