@@ -263,11 +263,22 @@ function handleEvents() {
         sfx.lost();
         renderer.floatText('-1', e.x, e.y + 1.5, '#ff7070', 1);
         break;
-      case 'penned':
+      case 'penned': {
         sfx.penned();
-        renderer.burst(e.x, e.y, '#ffe27a', 2, 2, 0.1);
+        // Sheep pouring in back to back build a combo.
+        const now = performance.now();
+        combo = now - lastPennedAt < 900 ? combo + 1 : 1;
+        lastPennedAt = now;
+        renderer.burst(e.x, e.y, '#ffe27a', 6, 3, 0.12);
+        if (combo >= 3) {
+          renderer.floatText(`x${combo}!`, e.x, e.y + 2.2, combo >= 8 ? '#ff9f43' : '#ffe27a', Math.min(2.2, 1 + combo * 0.1), 0.9);
+          if (combo % 5 === 0) haptic(15);
+        } else {
+          renderer.floatText('+1', e.x, e.y + 1.4, '#ffffff', 0.9, 0.8);
+        }
         if (Math.random() < 0.08) sfx.baa();
         break;
+      }
       case 'bark':
         sfx.bark();
         renderer.ring(e.x, e.y, e.radius, 'rgba(255,255,255,0.9)');
@@ -290,6 +301,9 @@ function handleEvents() {
   world.events.length = 0;
 }
 
+let combo = 0;
+let lastPennedAt = 0;
+
 function handleMeadowEvents(m: Meadow) {
   for (const e of m.events) {
     switch (e.type) {
@@ -300,11 +314,22 @@ function handleMeadowEvents(m: Meadow) {
         sfx.baa(1.1);
         haptic(10);
         break;
-      case 'penned':
+      case 'penned': {
         sfx.penned();
-        renderer.burst(e.x, e.y, '#ffe27a', 2, 2, 0.1);
+        // Sheep pouring in back to back build a combo.
+        const now = performance.now();
+        combo = now - lastPennedAt < 900 ? combo + 1 : 1;
+        lastPennedAt = now;
+        renderer.burst(e.x, e.y, '#ffe27a', 6, 3, 0.12);
+        if (combo >= 3) {
+          renderer.floatText(`x${combo}!`, e.x, e.y + 2.2, combo >= 8 ? '#ff9f43' : '#ffe27a', Math.min(2.2, 1 + combo * 0.1), 0.9);
+          if (combo % 5 === 0) haptic(15);
+        } else {
+          renderer.floatText('+1', e.x, e.y + 1.4, '#ffffff', 0.9, 0.8);
+        }
         if (Math.random() < 0.08) sfx.baa();
         break;
+      }
       case 'bark':
         sfx.bark();
         renderer.ring(e.x, e.y, e.radius, 'rgba(255,255,255,0.9)');
@@ -317,7 +342,10 @@ function handleMeadowEvents(m: Meadow) {
       case 'done':
         doneAt = performance.now();
         showBanner(e.allPenned ? 'All home!' : m.penned > 0 ? `${m.penned} penned` : 'Night fell…');
-        if (e.allPenned) sfx.fanfare();
+        if (e.allPenned) {
+          sfx.fanfare();
+          renderer.confetti();
+        }
         break;
     }
   }
@@ -340,7 +368,7 @@ function updateHud() {
     const left = Math.ceil(m.timeLeft());
     levelNameEl.textContent = `☀️ ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} · ${m.def.name}`;
     progressEl.style.width = ((m.timeLeft() / m.limit) * 100).toFixed(1) + '%';
-    const withYou = m.flockCenter().n;
+    const withYou = Math.max(0, m.gathered - m.penned);
     const key = m.penned * 10000 + withYou;
     if (key !== lastCount) {
       countEl.innerHTML = `🏠 ${m.penned}/${m.total}<small>${withYou} with you</small>`;

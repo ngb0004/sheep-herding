@@ -22,6 +22,14 @@ export class Meadow3D {
   private ndc = new THREE.Vector2();
   private world: THREE.Group | null = null;
   private terrain: THREE.Mesh | null = null;
+  /** Seconds, shared by the cloud-shadow and grass-sway shaders. */
+  private uTime = { value: 0 };
+  /** When each sheep was first seen in the pen, for its hop over the threshold. */
+  private pennedAt = new Map<number, number>();
+  private dust: THREE.InstancedMesh | null = null;
+  private puffs: { x: number; y: number; h: number; vx: number; vy: number; life: number; max: number; size: number }[] = [];
+  private woolColor = new THREE.Color();
+  private dustT = 0;
   private sheepMesh: THREE.InstancedMesh | null = null;
   /** Legs in diagonal pairs (front-left + back-right, and the other two), swung in opposite phase. */
   private legsA: THREE.InstancedMesh | null = null;
@@ -83,8 +91,10 @@ export class Meadow3D {
     if (m.def !== this.def) this.build(m);
     this.updateCamera(m);
     this.updateLight(m);
+    this.uTime.value = t;
     this.updateSheep(m, t);
     this.updateDog(m, t);
+    this.updateDust(m);
     this.renderer.render(this.scene, this.camera);
   }
 
@@ -168,6 +178,38 @@ export class Meadow3D {
     this.sun.target.updateMatrixWorld();
   }
 
+  /** A little cloud of dust kicked up at a sim point. */
+  private puff(x: number, y: number, size: number): void {
+    if (this.puffs.length >= DUST_MAX) return;
+    const a = Math.random() * Math.PI * 2;
+    this.puffs.push({ x, y, h: this.standAt(x, y) + 0.15, vx: Math.cos(a) * 0.4, vy: Math.sin(a) * 0.4, life: 0, max: 0.6 + Math.random() * 0.4, size });
+  }
+
+  private updateDust(m: Meadow): void {
+    const dust = this.dust;
+    if (!dust) return;
+    void m;
+    const dt = clamp(this.uTime.value - this.dustT, 0, 0.1);
+    this.dustT = this.uTime.value;
+    this.puffs = this.puffs.filter((p) => (p.life += dt) < p.max);
+    const o = this.tmp;
+    this.puffs.forEach((p, i) => {
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.h += 0.5 * dt;
+      const q = p.life / p.max;
+      // Swell quickly, then shrink away.
+      const sc = p.size * Math.min(1, q * 5) * (1 - q * q);
+      o.position.set(p.x, p.h, -p.y);
+      o.rotation.set(q * 2, q * 3, 0);
+      o.scale.setScalar(Math.max(0.001, sc));
+      o.updateMatrix();
+      dust.setMatrixAt(i, o.matrix);
+    });
+    dust.count = this.puffs.length;
+    dust.instanceMatrix.needsUpdate = true;
+  }
+
   /** Where an animal's feet go: the ground, or the bridge deck when it's on one. */
   private standAt(x: number, y: number): number {
     let h = this.heights(x, y);
@@ -187,13 +229,27 @@ export class Meadow3D {
       const trot = Math.min(1, speed / 3);
       // s.phase advances faster the faster the sheep moves, so stride follows speed.
       const stride = s.phase * 3;
-      const bob = Math.abs(Math.sin(stride)) * 0.12 * trot;
+      let bob = Math.abs(Math.sin(stride)) * 0.12 * trot;
+      let tilt = Math.sin(stride) * 0.05 * trot;
+      if (s.state === 'penned') {
+        // A happy hop over the threshold, then the odd skip of joy while they mill about.
+        if (!this.pennedAt.has(s.id)) this.pennedAt.set(s.id, t);
+        const since = t - this.pennedAt.get(s.id)!;
+        const hop = since < 0.5 ? Math.sin((since / 0.5) * Math.PI) * 0.9 : 0;
+        const joy = Math.max(0, Math.sin(t * 2.1 + s.id * 2.39) - 0.93) * 6;
+        bob += hop + joy;
+        tilt += hop * 0.4;
+      } else if (speed > 3.2 && Math.random() < speed * 0.012) {
+        this.puff(s.x - Math.cos(s.heading) * 0.5, s.y - Math.sin(s.heading) * 0.5, 0.45 + Math.random() * 0.3);
+      }
       o.position.set(s.x, this.standAt(s.x, s.y) + bob, -s.y);
-      o.rotation.set(0, s.heading, Math.sin(stride) * 0.05 * trot);
-      const k = s.lamb ? 0.68 : 1;
+      o.rotation.set(0, s.heading, tilt);
+      const k = (s.lamb ? 0.68 : 1) * (0.92 + hash2(s.id, 1, 9) * 0.16);
       o.scale.set(k, k, k);
       o.updateMatrix();
       mesh.setMatrixAt(n, o.matrix);
+      // Roughly one in twelve is a black sheep.
+      mesh.setColorAt(n, this.woolColor.set(s.id % 12 === 7 ? 0x5e5550 : 0xffffff));
       // Legs pivot at the hip; a grazing sheep's legs barely move.
       const swing = Math.sin(stride) * (0.08 + 0.55 * trot);
       this.legLocal.makeRotationZ(swing).setPosition(0, SHEEP_HIP, 0);
@@ -206,6 +262,7 @@ export class Meadow3D {
       im.count = n;
       im.instanceMatrix.needsUpdate = true;
     }
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     void t;
   }
 
@@ -220,6 +277,7 @@ export class Meadow3D {
     const st = this.dogStride;
     dog.position.set(d.x, this.standAt(d.x, d.y) + Math.abs(Math.sin(st)) * 0.14 * run, -d.y);
     dog.rotation.set(0, d.heading, Math.sin(st) * 0.04 * run);
+    if (speed > 4.5 && Math.random() < 0.25) this.puff(d.x - Math.cos(d.heading) * 0.6, d.y - Math.sin(d.heading) * 0.6, 0.3);
     // Gallop-ish: diagonal pairs swing in opposite phase.
     const swing = Math.sin(st) * (0.1 + 0.75 * run);
     this.dogLegs.forEach((leg, i) => (leg.rotation.z = i === 0 || i === 3 ? swing : -swing));
@@ -243,7 +301,9 @@ export class Meadow3D {
     this.scene.add(g);
     this.heights = makeHeights(def);
     this.decks = [];
-    const flat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+    this.pennedAt.clear();
+    this.puffs = [];
+    const flat = withClouds(new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }), this.uTime);
 
     // Terrain: the field plus a rising bank all round it.
     const pad = 30;
@@ -290,8 +350,18 @@ export class Meadow3D {
       return im;
     };
     this.sheepMesh = inst(geos.body);
+    this.sheepMesh.setColorAt(0, this.woolColor.set(0xffffff));
     this.legsA = inst(geos.legsA);
     this.legsB = inst(geos.legsB);
+
+    this.dust = new THREE.InstancedMesh(
+      new THREE.IcosahedronGeometry(1, 1),
+      new THREE.MeshLambertMaterial({ color: 0xf2e6c8, emissive: 0x6b5f45, transparent: true, opacity: 0.55, depthWrite: false }),
+      DUST_MAX,
+    );
+    this.dust.count = 0;
+    this.dust.frustumCulled = false;
+    g.add(this.dust);
 
     const { dog, tail, legs } = dogModel(flat);
     this.dog = dog;
@@ -516,7 +586,7 @@ export class Meadow3D {
 
     // Flowers: tiny instanced specks scattered through the grass.
     const flowerGeo = colored(new THREE.OctahedronGeometry(0.09, 0), new THREE.Color(0xffffff));
-    const flowers = new THREE.InstancedMesh(flowerGeo, new THREE.MeshLambertMaterial({ vertexColors: true }), 700);
+    const flowers = new THREE.InstancedMesh(flowerGeo, withClouds(new THREE.MeshLambertMaterial({ vertexColors: true }), this.uTime), 700);
     const fc = new THREE.Color();
     for (let k = 0; k < 700; k++) {
       const x = hash2(k, 7, def.seed) * def.width;
@@ -536,7 +606,7 @@ export class Meadow3D {
     tuftGeo.translate(0, 0.16, 0);
     const tufts = new THREE.InstancedMesh(
       colored(tuftGeo, new THREE.Color(0xffffff)),
-      new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }),
+      withClouds(new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }), this.uTime, true),
       2600,
     );
     const tc = new THREE.Color();
@@ -570,6 +640,57 @@ function colored(geo: THREE.BufferGeometry, color: THREE.Color): THREE.BufferGeo
 }
 
 const SHEEP_HIP = 0.42;
+const DUST_MAX = 160;
+
+/**
+ * Patch a Lambert material so drifting cloud shadows dim the sunlight on it,
+ * and optionally so it sways in the wind (grass). Both run off `time`.
+ */
+function withClouds<T extends THREE.MeshLambertMaterial>(mat: T, time: { value: number }, sway = false): T {
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = time;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nuniform float uTime;\nvarying vec2 vCloud;')
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+        vec4 cloudWorld = vec4(transformed, 1.0);
+        #ifdef USE_INSTANCING
+          cloudWorld = instanceMatrix * cloudWorld;
+        #endif
+        cloudWorld = modelMatrix * cloudWorld;
+        vCloud = cloudWorld.xz;
+        ${sway ? `
+        float gust = sin(uTime * 1.6 + cloudWorld.x * 0.22 + cloudWorld.z * 0.15) * 0.5 + 0.5;
+        float bend = max(0.0, position.y) * (0.15 + 0.4 * gust);
+        transformed.x += bend * sin(uTime * 3.1 + cloudWorld.x * 0.7);
+        transformed.z += bend * 0.5 * cos(uTime * 2.7 + cloudWorld.z * 0.6);` : ''}`,
+      );
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        '#include <common>',
+        `#include <common>
+        uniform float uTime;
+        varying vec2 vCloud;
+        float cloudHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        float cloudNoise(vec2 p) {
+          vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(cloudHash(i), cloudHash(i + vec2(1.0, 0.0)), f.x),
+                     mix(cloudHash(i + vec2(0.0, 1.0)), cloudHash(i + vec2(1.0, 1.0)), f.x), f.y);
+        }`,
+      )
+      .replace(
+        '#include <aomap_fragment>',
+        `#include <aomap_fragment>
+        vec2 cp = vCloud * 0.035 + vec2(uTime * 0.035, uTime * 0.018);
+        float cn = cloudNoise(cp) * 0.65 + cloudNoise(cp * 2.3 + 7.0) * 0.35;
+        reflectedLight.directDiffuse *= mix(1.0, 0.62, smoothstep(0.55, 0.72, cn));`,
+      );
+  };
+  // Keep three from sharing the compiled program with an unpatched twin.
+  mat.customProgramCacheKey = () => (sway ? 'clouds-sway' : 'clouds');
+  return mat;
+}
 
 /**
  * Chunky low-poly sheep facing +x (matches the sim's heading 0), feet at y = 0.
@@ -597,6 +718,20 @@ function sheepGeometry(): { body: THREE.BufferGeometry; legsA: THREE.BufferGeome
   const head = new THREE.BoxGeometry(0.3, 0.3, 0.26);
   head.translate(0.62, 0.78, 0);
   parts.push(colored(head, face));
+  // Big friendly eyes: they sell the sheep in close-ups.
+  const eyeWhite = new THREE.Color(0xffffff);
+  const pupil = new THREE.Color(0x111111);
+  for (const z of [-0.075, 0.075]) {
+    const eye = new THREE.BoxGeometry(0.04, 0.1, 0.08);
+    eye.translate(0.775, 0.83, z);
+    parts.push(colored(eye, eyeWhite));
+    const dot = new THREE.BoxGeometry(0.03, 0.06, 0.045);
+    dot.translate(0.795, 0.82, z * 1.05);
+    parts.push(colored(dot, pupil));
+  }
+  const nose = new THREE.BoxGeometry(0.04, 0.05, 0.1);
+  nose.translate(0.78, 0.7, 0);
+  parts.push(colored(nose, new THREE.Color(0xd99a9a)));
   const tuft = new THREE.IcosahedronGeometry(0.13, 0);
   tuft.translate(0.52, 0.96, 0);
   parts.push(colored(tuft, woolHi));

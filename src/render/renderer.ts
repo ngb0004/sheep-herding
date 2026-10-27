@@ -74,6 +74,8 @@ export class Renderer {
   private particles: Particle[] = [];
   private texts: FloatText[] = [];
   private rings: Ring[] = [];
+  /** Screen-space confetti for the big finish (CSS px, falling). */
+  private confettiBits: { x: number; y: number; vx: number; vy: number; a: number; va: number; life: number; color: string }[] = [];
   private shake = 0;
   /** Pre-rendered hill shading for the current meadow (2 px per metre, drawn smoothed). */
   private groundCache: { key: number; canvas: HTMLCanvasElement } | null = null;
@@ -111,6 +113,23 @@ export class Renderer {
 
   ring(x: number, y: number, r: number, color: string, life = 0.45) {
     this.rings.push({ x, y, r, life: 0, max: life, color });
+  }
+
+  confetti(n = 140) {
+    const colors = ['#ffd54a', '#ff6b6b', '#5ad1ff', '#8cff6a', '#ffffff', '#ff9ff3'];
+    for (let i = 0; i < n; i++) {
+      const fromLeft = i % 2 === 0;
+      this.confettiBits.push({
+        x: fromLeft ? -10 : this.w + 10,
+        y: this.h * (0.55 + Math.random() * 0.3),
+        vx: (fromLeft ? 1 : -1) * (250 + Math.random() * 450) * this.dpr,
+        vy: -(700 + Math.random() * 700) * this.dpr,
+        a: Math.random() * 6,
+        va: (Math.random() - 0.5) * 14,
+        life: 0,
+        color: colors[i % colors.length],
+      });
+    }
   }
 
   addShake(amount: number) {
@@ -997,6 +1016,20 @@ export class Renderer {
       ctx.fillText(f.text, fx, y);
     }
     ctx.globalAlpha = 1;
+
+    this.confettiBits = this.confettiBits.filter((c) => (c.life += dt) < 3.5 && c.y < this.h + 40);
+    for (const c of this.confettiBits) {
+      c.vy += 1100 * this.dpr * dt;
+      c.vx *= 1 - dt * 1.2;
+      c.vy *= 1 - dt * 0.8;
+      c.x += c.vx * dt;
+      c.y += c.vy * dt;
+      c.a += c.va * dt;
+      ctx.setTransform(Math.cos(c.a), Math.sin(c.a) * 0.4, -Math.sin(c.a), Math.cos(c.a) * 0.4, c.x, c.y);
+      ctx.fillStyle = c.color;
+      ctx.fillRect(-5 * this.dpr, -3 * this.dpr, 10 * this.dpr, 6 * this.dpr);
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
   }
 }
 
