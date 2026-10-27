@@ -9,6 +9,7 @@ const quick = process.argv.includes('--quick');
   const { browser, page } = await open('http://localhost:4190/sheep-herding/play/?level=1&auto=good&capture&msaa=0', { dpr: quick ? 1 : 3 });
   const frames = new Frames(path.join(out, 'nearmiss-frames'));
   let stuck = false;
+  let stuckAt = -1;
   let doneFrames = 0;
   while (doneFrames < 30) {
     const st = await page.evaluate((stuck) => {
@@ -47,14 +48,15 @@ const quick = process.argv.includes('--quick');
     let cap = '';
     if (st.t < 5) cap = 'Get them ALL home before dark! 🌙';
     else if (!stuck && st.penned >= st.total - 6) cap = 'Almost… 🤞';
-    else if (stuck && !st.done && st.penned < st.total - 1) cap = 'Almost… 🤞';
-    else if (stuck && !st.done) cap = left <= 10 ? `HURRY!! ⏰ ${left}s` : 'Just 1 left!! 😱';
+    else if (stuck && !st.done && st.penned === 0) cap = 'Almost… 🤞';
+    else if (stuck && !st.done) cap = left <= 10 ? `HURRY!! ⏰ ${left}s` : `Just ${st.total - st.penned} left!! 😱`;
     else if (st.done) cap = `NOOO! ${st.penned}/${st.total} 😭`;
     await setCaption(page, cap);
     await setCount(page, st.t < 2 ? '' : `🏠 ${st.penned}/${st.total}`);
     await frames.shoot(page);
     // Normal speed as the flock reaches the gate, so the staging can't overshoot; fast through the sunset.
-    const settling = stuck && st.penned < st.total - 1;
+    if (stuck && stuckAt < 0) stuckAt = st.t;
+    const settling = stuck && st.penned < st.total - 1 && st.t - stuckAt < 2.5;
     const speed = st.t < 2 ? 1 : stuck ? (settling ? 1 : st.limit - st.t > 6 ? 8 : 2) : st.penned >= st.total - 10 ? 1 : 2;
     await page.evaluate((n) => window.__flock.advance(n, 30), st.done ? 1 : speed);
     if (frames.n % 30 === 0) console.log(`video ${frames.seconds.toFixed(1)}s game ${st.t.toFixed(1)}s home ${st.penned}/${st.total}`);
