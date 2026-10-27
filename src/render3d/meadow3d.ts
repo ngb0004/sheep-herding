@@ -24,7 +24,7 @@ import { clamp, hash2, segmentT, smoothNoise } from '../game/math';
  * "into the screen". Rolling hills are visual only.
  */
 
-const PAL = {
+export const PAL = {
   grass: 0x5fb43c,
   grassLight: 0x9fd85a,
   grassDark: 0x3c8f30,
@@ -848,7 +848,7 @@ export class Meadow3D {
 const DUST_MAX = 160;
 
 /** One direction of a blur that grows toward the top (far) edge of the screen. */
-const TILT_SHIFT = {
+export const TILT_SHIFT = {
   name: 'TiltShift',
   uniforms: {
     tDiffuse: { value: null },
@@ -875,7 +875,7 @@ const TILT_SHIFT = {
     }`,
 };
 
-interface Look {
+export interface Look {
   /** Drifting cloud shadows dim the sunlight. */
   clouds?: boolean;
   /** Sway in the wind (grass, flowers): bends with height above the model's origin. */
@@ -887,7 +887,7 @@ interface Look {
 }
 
 /** One material family for the whole diorama: smooth Lambert (or the given base) plus the touches in `look`. */
-function toyMaterial<T extends THREE.MeshLambertMaterial | THREE.MeshPhongMaterial = THREE.MeshLambertMaterial>(
+export function toyMaterial<T extends THREE.MeshLambertMaterial | THREE.MeshPhongMaterial = THREE.MeshLambertMaterial>(
   time: { value: number },
   look: Look,
   base?: T,
@@ -948,7 +948,7 @@ function toyMaterial<T extends THREE.MeshLambertMaterial | THREE.MeshPhongMateri
 
 // ------------------------------------------------------------------ models
 
-function colored(geo: THREE.BufferGeometry, color: THREE.Color): THREE.BufferGeometry {
+export function colored(geo: THREE.BufferGeometry, color: THREE.Color): THREE.BufferGeometry {
   const g = geo.index ? geo.toNonIndexed() : geo;
   const n = g.attributes.position.count;
   const arr = new Float32Array(n * 3);
@@ -959,7 +959,7 @@ function colored(geo: THREE.BufferGeometry, color: THREE.Color): THREE.BufferGeo
 }
 
 /** Vertex colours running from `bottom` (at y0) to `top` (at y1): the painted-toy look. */
-function shaded(geo: THREE.BufferGeometry, top: number, bottom: number, y0: number, y1: number): THREE.BufferGeometry {
+export function shaded(geo: THREE.BufferGeometry, top: number, bottom: number, y0: number, y1: number): THREE.BufferGeometry {
   const g = geo.index ? geo.toNonIndexed() : geo;
   const pos = g.attributes.position as THREE.BufferAttribute;
   const arr = new Float32Array(pos.count * 3);
@@ -977,7 +977,7 @@ function shaded(geo: THREE.BufferGeometry, top: number, bottom: number, y0: numb
 }
 
 /** A smooth sphere, gently lumpy if `lump` > 0, with soft normals. */
-function blob(r: number, detail: number, lump = 0, seed = 0): THREE.BufferGeometry {
+export function blob(r: number, detail: number, lump = 0, seed = 0): THREE.BufferGeometry {
   let geo: THREE.BufferGeometry = new THREE.IcosahedronGeometry(r, detail);
   geo.deleteAttribute('normal');
   geo.deleteAttribute('uv');
@@ -1000,7 +1000,7 @@ function i32(x: number, y: number): number {
   return (Math.round(x * 13) * 31 + Math.round(y * 17)) & 0xffff;
 }
 
-function stoneBlob(x: number, h: number, y: number, r: number, seed: number): THREE.BufferGeometry {
+export function stoneBlob(x: number, h: number, y: number, r: number, seed: number): THREE.BufferGeometry {
   const s = blob(r, 2, 0.35, seed % 97);
   s.scale(1.15, 0.8, 1.0);
   s.rotateY(hash2(seed, 2, 3) * 6);
@@ -1011,14 +1011,14 @@ function stoneBlob(x: number, h: number, y: number, r: number, seed: number): TH
 }
 
 /** A soft green cushion of grass draped over the top of a stone. */
-function grassCap(x: number, h: number, y: number, r: number, seed: number): THREE.BufferGeometry {
+export function grassCap(x: number, h: number, y: number, r: number, seed: number): THREE.BufferGeometry {
   const c = blob(r, 2, 0.25, seed % 89);
   c.scale(1.1, 0.42, 1.05);
   c.translate(x, h, -y);
   return shaded(c, PAL.grassLight, PAL.grass, h - r * 0.3, h + r * 0.4);
 }
 
-function leafBlob(x: number, h: number, y: number, r: number, squash: number, seed: number): THREE.BufferGeometry {
+export function leafBlob(x: number, h: number, y: number, r: number, squash: number, seed: number): THREE.BufferGeometry {
   const b = blob(r, 2, 0.18, seed % 83);
   b.scale(1, squash, 1);
   b.translate(x, h, -y);
@@ -1026,7 +1026,7 @@ function leafBlob(x: number, h: number, y: number, r: number, squash: number, se
 }
 
 /** Round-topped tree: a tapered trunk and a cluster of soft canopy puffs. */
-function puffyTree(x: number, h: number, y: number, r: number, seed: number): THREE.BufferGeometry[] {
+export function puffyTree(x: number, h: number, y: number, r: number, seed: number): THREE.BufferGeometry[] {
   const out: THREE.BufferGeometry[] = [];
   const trunkH = 1.6 + r * 0.5;
   const trunk = new THREE.CylinderGeometry(0.18 + r * 0.06, 0.3 + r * 0.08, trunkH, 10, 1);
@@ -1044,7 +1044,7 @@ function puffyTree(x: number, h: number, y: number, r: number, seed: number): TH
   return out;
 }
 
-function bush(x: number, h: number, y: number, r: number, seed: number): THREE.BufferGeometry[] {
+export function bush(x: number, h: number, y: number, r: number, seed: number): THREE.BufferGeometry[] {
   const out: THREE.BufferGeometry[] = [];
   for (let k = 0; k < 3; k++) {
     const a = (k / 3) * Math.PI * 2 + hash2(seed, k, 6);
@@ -1061,16 +1061,16 @@ function bush(x: number, h: number, y: number, r: number, seed: number): THREE.B
   return out;
 }
 
-const SHEEP_HIP = 0.45;
+export const SHEEP_HIP = 0.45;
 /** Where a sheep's head pivots when it dips to graze. */
-const NECK = { x: 0.42, y: 0.82 };
+export const NECK = { x: 0.42, y: 0.82 };
 
 /**
  * Fluffy sheep facing +x (matches the sim's heading 0), feet at y = 0.
  * Wool and face are separate so black sheep can tint just their fleece and
  * heads can dip to graze. Legs come in diagonal pairs, pivoting at the hip.
  */
-function sheepGeometry(): {
+export function sheepGeometry(): {
   wool: THREE.BufferGeometry;
   face: THREE.BufferGeometry;
   woolLo: THREE.BufferGeometry;
@@ -1168,7 +1168,7 @@ function sheepGeometry(): {
  * A multiplier gate, centred on its group's origin: two rounded white posts,
  * a glowing see-through panel and a big label. Green multiplies, blue adds.
  */
-function gateModel(width: number, kind: 'x' | '+', n: number, mat: THREE.Material): { group: THREE.Group; panel: THREE.Mesh } {
+export function gateModel(width: number, kind: 'x' | '+', n: number, mat: THREE.Material): { group: THREE.Group; panel: THREE.Mesh } {
   const group = new THREE.Group();
   const colour = kind === 'x' ? (n >= 3 ? 0x2bd96b : 0x4fd1ff) : 0x5b8cff;
   const h = 2.6;
@@ -1220,7 +1220,7 @@ function gateModel(width: number, kind: 'x' | '+', n: number, mat: THREE.Materia
   return { group, panel };
 }
 
-interface DogRig {
+export interface DogRig {
   root: THREE.Group;
   torso: THREE.Group;
   head: THREE.Group;
@@ -1229,11 +1229,11 @@ interface DogRig {
   legs: THREE.Group[];
 }
 
-const DOG_TORSO_Y = 0.6;
-const DOG_HEAD = { x: 0.4, y: 0.24 };
+export const DOG_TORSO_Y = 0.6;
+export const DOG_HEAD = { x: 0.4, y: 0.24 };
 
 /** Border collie, facing +x: black coat, white blaze, ruff, chest, socks and tail tip. */
-function dogModel(mat: THREE.Material): DogRig {
+export function dogModel(mat: THREE.Material): DogRig {
   const black = PAL.collie;
   const white = PAL.collieWhite;
   const mesh = (parts: THREE.BufferGeometry[]) => {

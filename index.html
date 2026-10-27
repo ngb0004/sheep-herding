@@ -2,34 +2,216 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-    <meta name="theme-color" content="#3f7a2c" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="mobile-web-app-capable" content="yes" />
-    <title>Flock Rescue</title>
-    <link rel="stylesheet" href="/src/style.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Flock Rescue · Round them up. Bring them home.</title>
+    <meta name="description" content="Flock Rescue is a cozy sheepdog game. Herd a handful of sheep into a flock of hundreds, bring them home before sunset, and build your farm. Play the free demo in your browser." />
+    <meta name="theme-color" content="#6cbf45" />
+    <meta property="og:title" content="Flock Rescue" />
+    <meta property="og:description" content="Round them up. Bring them home. Play the free demo in your browser." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="media/poster-stampede.jpg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@700;800&family=Nunito:wght@600;800;900&display=swap" rel="stylesheet" />
+    <style>
+      :root {
+        --sky: #a8dcff;
+        --grass: #6cbf45;
+        --grass-dark: #3f8a2e;
+        --cream: #fffaf0;
+        --ink: #23331b;
+        --muted: #5d6b55;
+        --orange: #ff8a3d;
+        --orange-dark: #d0601f;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; }
+      body {
+        font-family: 'Nunito', system-ui, -apple-system, 'Segoe UI', sans-serif;
+        color: var(--ink);
+        background: linear-gradient(180deg, var(--sky) 0%, #cdeeff 32%, #dff4c9 58%, #bfe59a 100%);
+        min-height: 100vh;
+        overflow-x: hidden;
+      }
+      a { color: inherit; }
+      .wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+
+      header { display: flex; align-items: center; justify-content: space-between; padding: 18px 0; }
+      .brand { font-family: 'Baloo 2', sans-serif; font-weight: 800; font-size: 24px; display: flex; align-items: center; gap: 8px; text-decoration: none; }
+      .brand span { font-size: 28px; }
+      header nav a { font-weight: 800; text-decoration: none; background: rgba(255,255,255,0.7); padding: 8px 14px; border-radius: 20px; }
+
+      .hero { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 40px; align-items: center; padding: 20px 0 40px; }
+      .hero h1 { font-family: 'Baloo 2', sans-serif; font-size: clamp(46px, 7vw, 78px); line-height: 0.95; margin: 0 0 14px; color: #fff;
+        text-shadow: 0 5px 0 var(--grass-dark), 0 10px 24px rgba(30, 60, 20, 0.25); letter-spacing: -1px; }
+      .hero .tag { font-size: clamp(20px, 2.6vw, 26px); font-weight: 900; margin: 0 0 12px; }
+      .hero p.lead { font-size: 18px; line-height: 1.5; color: var(--muted); margin: 0 0 26px; max-width: 480px; }
+      .cta { display: inline-flex; align-items: center; gap: 10px; background: var(--orange); color: #fff; text-decoration: none; font-weight: 900; font-size: 22px;
+        padding: 16px 30px; border-radius: 40px; box-shadow: 0 6px 0 var(--orange-dark), 0 12px 24px rgba(208, 96, 31, 0.3); transition: transform 0.08s; }
+      .cta:active { transform: translateY(4px); box-shadow: 0 2px 0 var(--orange-dark); }
+      .cta small { font-size: 14px; font-weight: 800; opacity: 0.9; }
+      .stores { display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
+      .store { background: #1d1d1f; color: #fff; border-radius: 12px; padding: 8px 14px; font-weight: 800; font-size: 14px; line-height: 1.15; opacity: 0.85; }
+      .store small { display: block; font-weight: 600; font-size: 11px; opacity: 0.75; }
+
+      .phone { justify-self: center; width: min(320px, 78vw); aspect-ratio: 9 / 19.2; background: #1d1d1f; border-radius: 44px; padding: 12px;
+        box-shadow: 0 30px 60px rgba(30, 60, 20, 0.35), inset 0 0 0 2px #3a3a3c; position: relative; }
+      .phone video { width: 100%; height: 100%; object-fit: cover; border-radius: 33px; display: block; background: var(--grass); }
+      .phone::before { content: ''; position: absolute; top: 20px; left: 50%; width: 90px; height: 24px; margin-left: -45px; background: #1d1d1f; border-radius: 14px; z-index: 2; }
+
+      .signup { margin-top: 24px; background: rgba(255,255,255,0.75); border-radius: 20px; padding: 14px; max-width: 480px; }
+      .signup p { margin: 0 0 8px; font-weight: 800; }
+      .signup form { display: flex; gap: 8px; }
+      .signup input { flex: 1; min-width: 0; border: 2px solid #d9e6cc; border-radius: 14px; padding: 12px 14px; font: inherit; font-weight: 700; }
+      .signup button { border: 0; background: var(--grass); color: #fff; font: inherit; font-weight: 900; border-radius: 14px; padding: 0 18px; box-shadow: 0 4px 0 var(--grass-dark); cursor: pointer; }
+      .signup .done { color: var(--grass-dark); font-weight: 900; }
+
+      section.features { padding: 30px 0 50px; }
+      section h2 { font-family: 'Baloo 2', sans-serif; font-size: clamp(32px, 4.5vw, 44px); text-align: center; margin: 0 0 26px; }
+      .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+      .card { background: var(--cream); border-radius: 26px; overflow: hidden; box-shadow: 0 10px 0 rgba(63, 138, 46, 0.18), 0 16px 30px rgba(30, 60, 20, 0.12); }
+      .card video, .card img { width: 100%; aspect-ratio: 9 / 12; object-fit: cover; display: block; background: var(--grass); }
+      .card .txt { padding: 16px 18px 20px; }
+      .card h3 { margin: 0 0 6px; font-size: 21px; font-weight: 900; }
+      .card p { margin: 0; color: var(--muted); line-height: 1.45; }
+      .soon { display: inline-block; background: #ffe14d; color: #4a3d10; font-size: 12px; font-weight: 900; padding: 2px 8px; border-radius: 8px; vertical-align: middle; margin-left: 6px; }
+
+      .final { text-align: center; padding: 20px 0 60px; }
+      .final p { font-size: 18px; color: var(--muted); margin: 0 0 22px; }
+      footer { text-align: center; padding: 24px 0 40px; color: var(--muted); font-size: 14px; }
+
+      @media (max-width: 780px) {
+        .hero { grid-template-columns: 1fr; text-align: center; gap: 28px; padding-top: 4px; }
+        .hero p.lead, .signup { margin-left: auto; margin-right: auto; }
+        .stores { justify-content: center; }
+        .grid { grid-template-columns: 1fr; max-width: 420px; margin: 0 auto; }
+        .phone { order: -1; width: min(270px, 70vw); }
+      }
+    </style>
   </head>
   <body>
-    <div id="stage">
-      <canvas id="game3d" class="hidden"></canvas>
-      <canvas id="game"></canvas>
+    <div class="wrap">
+      <header>
+        <a class="brand" href="./"><span>🐑</span> Flock Rescue</a>
+        <nav><a href="play/" data-play>Play demo</a></nav>
+      </header>
 
-      <div id="hud" class="hidden">
-        <div class="hud-top">
-          <button id="pause" class="icon-btn" aria-label="Pause">❚❚</button>
-          <div class="hud-mid">
-            <div id="level-name"></div>
-            <div class="progress"><div id="progress-fill"></div></div>
+      <main class="hero">
+        <div>
+          <h1>Flock<br />Rescue</h1>
+          <p class="tag">Round them up. Bring them home. 🐕</p>
+          <p class="lead">
+            You're a border collie on the green hills of Ireland. Start with a handful of sheep, sweep up every stray,
+            grow your flock into hundreds and get them all home before the sun goes down.
+          </p>
+          <a class="cta" href="play/" data-play>▶ Play free <small>in your browser</small></a>
+          <div class="stores">
+            <div class="store"><small>Coming soon to the</small>App Store</div>
+            <div class="store"><small>Coming soon on</small>Google Play</div>
           </div>
-          <div id="count" class="count">🐑 0</div>
+          <div class="signup" id="signup" hidden>
+            <p>Get a heads-up when it launches on your phone:</p>
+            <form id="signup-form">
+              <input type="email" name="email" placeholder="you@email.com" required autocomplete="email" />
+              <button type="submit">Notify me</button>
+            </form>
+          </div>
         </div>
-        <div id="banner" class="banner hidden"></div>
-        <div id="hint" class="hint">Drag to move your dog.<br />Sheep run away from him.</div>
-        <button id="bark" class="bark" aria-label="Bark"><span>BARK</span></button>
-      </div>
+        <div class="phone">
+          <video autoplay muted loop playsinline poster="media/poster-stampede.jpg" src="media/trailer.mp4"></video>
+        </div>
+      </main>
 
-      <div id="overlay"></div>
+      <section class="features">
+        <h2>Herding, but make it cozy</h2>
+        <div class="grid">
+          <div class="card">
+            <video autoplay muted loop playsinline poster="media/poster-so-close.jpg" src="media/clip-so-close.mp4"></video>
+            <div class="txt">
+              <h3>Herd like a real sheepdog</h3>
+              <p>Sheep react to your dog the way real ones do. Get behind them, steer them through gaps and over bridges, and beat the sunset.</p>
+            </div>
+          </div>
+          <div class="card">
+            <video autoplay muted loop playsinline poster="media/poster-stampede.jpg" src="media/clip-stampede.mp4"></video>
+            <div class="txt">
+              <h3>From 6 sheep to 700+</h3>
+              <p>Drive your flock through multiplier gates and watch it snowball into a stampede that pours into the pen.</p>
+            </div>
+          </div>
+          <div class="card">
+            <video autoplay muted loop playsinline poster="media/poster-cozy-farm.jpg" src="media/clip-cozy-farm.mp4"></video>
+            <div class="txt">
+              <h3>Build your farm <span class="soon">COMING SOON</span></h3>
+              <p>Spend your wool on a barn, a thatched cottage, a duck pond and a flat cap for your pup.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="final">
+        <h2>Can you bring them all home?</h2>
+        <p>No download, no sign-up. Plays right in your phone's browser.</p>
+        <a class="cta" href="play/" data-play>▶ Play the free demo</a>
+      </section>
+
+      <footer>
+        © 2026 Flock Rescue · <a href="privacy.html">Privacy</a>
+      </footer>
     </div>
-    <script type="module" src="/src/main.ts"></script>
+
+    <script>
+      // Marketing settings. Leave blank to switch a feature off.
+      const CONFIG = {
+        // Meta (Facebook/Instagram) Pixel ID, from Events Manager. Tracks page views, demo plays and sign-ups for ad reporting.
+        metaPixelId: '',
+        // Where the email form posts (e.g. a Formspree form URL). The form stays hidden until this is set.
+        signupEndpoint: '',
+      };
+
+      // Carry ad tracking parameters (utm_*, fbclid) through to the game link.
+      const qs = location.search;
+      if (qs) document.querySelectorAll('[data-play]').forEach((a) => (a.href = a.getAttribute('href') + qs));
+
+      function track(event, custom) {
+        if (window.fbq) window.fbq(custom ? 'trackCustom' : 'track', event);
+      }
+
+      if (CONFIG.metaPixelId) {
+        !(function (f, b, e, v, n, t, s) {
+          if (f.fbq) return;
+          n = f.fbq = function () { n.callMethod ? n.callMethod.apply(n, arguments) : n.queue.push(arguments); };
+          if (!f._fbq) f._fbq = n;
+          n.push = n; n.loaded = !0; n.version = '2.0'; n.queue = [];
+          t = b.createElement(e); t.async = !0; t.src = v;
+          s = b.getElementsByTagName(e)[0]; s.parentNode.insertBefore(t, s);
+        })(window, document, 'script', 'https://connect.facebook.net/en_US/fbevents.js');
+        fbq('init', CONFIG.metaPixelId);
+        fbq('track', 'PageView');
+      }
+
+      document.querySelectorAll('[data-play]').forEach((a) => a.addEventListener('click', () => track('PlayDemo', true)));
+
+      if (CONFIG.signupEndpoint) {
+        const box = document.getElementById('signup');
+        box.hidden = false;
+        document.getElementById('signup-form').addEventListener('submit', async (e) => {
+          e.preventDefault();
+          const email = new FormData(e.target).get('email');
+          try {
+            const res = await fetch(CONFIG.signupEndpoint, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+              body: JSON.stringify({ email }),
+            });
+            if (!res.ok) throw new Error(String(res.status));
+            box.innerHTML = '<p class="done">🐑 You\'re on the list! We\'ll email you at launch.</p>';
+            track('Lead');
+          } catch {
+            box.querySelector('p').textContent = 'Something went wrong. Please try again.';
+          }
+        });
+      }
+    </script>
   </body>
 </html>

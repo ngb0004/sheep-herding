@@ -8,7 +8,7 @@ export type MeadowEvent =
   | { type: 'penned'; x: number; y: number }
   | { type: 'bark'; x: number; y: number; radius: number }
   | { type: 'warning' }
-  | { type: 'gate'; x: number; y: number; n: number; label: string }
+  | { type: 'gate'; x: number; y: number; n: number; label: string; gate: number }
   | { type: 'done'; allPenned: boolean };
 
 export interface PenBox {
@@ -298,7 +298,7 @@ export class Meadow {
           my += c.y;
         }
       }
-      if (made > 0) this.events.push({ type: 'gate', x: mx / made, y: my / made, n: made, label: (g.kind === 'x' ? 'x' : '+') + g.n });
+      if (made > 0) this.events.push({ type: 'gate', x: mx / made, y: my / made, n: made, label: (g.kind === 'x' ? 'x' : '+') + g.n, gate: gi });
     });
   }
 

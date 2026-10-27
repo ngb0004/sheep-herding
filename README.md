@@ -3,7 +3,11 @@
 A one-finger herding game for phones. You steer a border collie; the sheep keep
 their distance from him, and the whole flock moves like a ball you push.
 
-**Play:** https://ngb0004.github.io/sheep-herding/ (deploys on every push to `main`)
+**Landing page:** https://ngb0004.github.io/sheep-herding/ (trailer, "play free", coming-soon badges)
+**Play:** https://ngb0004.github.io/sheep-herding/play/ (deploys on every push to `main`)
+
+Handy URLs: `play/?level=100` Stampede Valley, `play/?auto=good` autopilot, `play/?gfx=2d` 2D look,
+`play/?scene=farm` the farm diorama.
 
 ## Round-up (main mode)
 
@@ -18,6 +22,23 @@ Round-up draws in stylized low-poly 3D (three.js): rolling hills, hedgerows,
 stone walls, a river with a plank bridge, and sunlight that slides from
 afternoon to golden hour to dusk as the timer runs out. The original 2D look is
 one tap away on the home screen ("Graphics: 3D/2D"), or `?gfx=2d`.
+
+## Stampede Valley (snowball)
+
+Start with 6 sheep at the bottom of a long valley. Drive them through glowing
+gates (×2, ×3, +12…) that multiply every sheep walking through, sweep up the
+grazing groups (a bigger flock calls strays from further away), cross the wall
+gap and the wide bridge, and pour the whole flock (often 700+) into the giant
+pen at the top. The camera pulls out as the flock grows. Stars are for how many
+you bring home.
+
+## Marketing
+
+`marketing/AD-TEST-PLAN.md` is the plan for testing three ad angles on Meta.
+`marketing/recorder/` records the ads from the real game: `?capture` steps the
+game one video frame at a time, so clips are perfectly smooth even on a slow
+machine. With `npx vite preview --port 4190` running:
+`node marketing/recorder/stampede.cjs <outDir>` (also `nearmiss.cjs`, `farm.cjs`).
 
 ## Trail (classic)
 

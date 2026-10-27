@@ -353,7 +353,7 @@ function handleMeadowEvents(m: Meadow) {
         break;
       case 'gate': {
         // One counter per gate that keeps climbing while the flock pours through.
-        const key = e.label + Math.round(e.y);
+        const key = String(e.gate);
         const now = clock();
         const live = gatePops.get(key);
         if (live && now - live.at < 700) {
@@ -795,4 +795,35 @@ if (params.get('level')) startLevel(levelId, mode);
 else showHome();
 let virtualNow = performance.now();
 if (capture) renderer.adClean = true;
-else requestAnimationFrame(frame);
+// ?scene=farm shows the farm diorama on its own (the cozy-farm ad and a look at the farm meta game).
+const farmScene = params.get('scene') === 'farm';
+if (farmScene) startFarmScene();
+else if (!capture) requestAnimationFrame(frame);
+
+function startFarmScene() {
+  overlay.innerHTML = '';
+  hud.classList.add('hidden');
+  canvas.classList.add('hidden');
+  canvas3d.classList.remove('hidden');
+  void import('./render3d/farm3d').then(({ Farm3D }) => {
+    const farm = new Farm3D(canvas3d);
+    const size = () => farm.resize(cssW, cssH, Math.min(window.devicePixelRatio || 1, capture ? 3 : 2));
+    size();
+    window.addEventListener('resize', size);
+    let t = 0;
+    (window as unknown as { __farm: unknown }).__farm = {
+      advance(frames = 1, fps = 30) {
+        t += frames / fps;
+        farm.render(t);
+      },
+    };
+    if (!capture) {
+      const start = performance.now();
+      const loop = (now: number) => {
+        requestAnimationFrame(loop);
+        farm.render((now - start) / 1000);
+      };
+      requestAnimationFrame(loop);
+    } else farm.render(0);
+  });
+}
